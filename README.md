@@ -22,6 +22,7 @@ legacy/
 test/
   face_tracker_test.py      Haar cascade 기반 얼굴 방향 테스트 (YOLO 없이)
   motor_test.py              모터 단독 테스트 (카메라 없이 키보드로 좌표 입력)
+  zero_actuator.py           DM4310-2EC 영점(0도) 설정 유틸리티
 ```
 
 ### main.py — 실행 흐름
@@ -111,6 +112,11 @@ test/
   자동 순환(`a`) 각 방향 정착 후 실측 제어 주파수와 Yaw/Pitch 각 축의 실제
   위치·속도·토크(`get_actual_freq()`/`get_state()`)를 출력해 실제로 목표에
   도달했는지 확인할 수 있다.
+- `zero_actuator.py`: DM4310-2EC의 영점(0 rad)을 설정하는 유틸리티. 모터를
+  활성화(enable)하지 않은 상태로 열기 때문에 손으로 자유롭게 돌릴 수 있다 —
+  짐벌을 원하는 정면/중앙 자세로 손으로 맞춘 뒤 Enter를 누르면 그 자리를 모터
+  내부 비휘발성 메모리에 0도로 저장한다(전원을 꺼도 유지됨). 조립 시, 또는
+  출력 디스크를 다시 조립했을 때 한 번만 실행하면 된다.
 
 ## Setup
 
@@ -171,4 +177,7 @@ uv run python test/motor_test.py
 
 # 실제 Damiao DM4310-2EC 모터 좌표 입력 테스트
 uv run python test/motor_test.py --motor
+
+# DM4310-2EC 영점(0도) 설정 (조립 시 1회)
+uv run python test/zero_actuator.py
 ```
