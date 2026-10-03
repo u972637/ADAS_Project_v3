@@ -1,10 +1,9 @@
 [project]
 name = "adas-project"
 version = "0.1.0"
-description = "Camera, YOLO, and Damiao DM4310-2EC (CAN) tracking scripts for an ADAS project."
+description = "Wildlife YOLO detection, DM4310 camera tracking, and class-based audio deterrence."
 requires-python = ">=3.10,<3.11"
 dependencies = [
-    "flask>=3.0",
     "numpy==1.26.4",
     "opencv-python==4.10.0.84",
     "pyserial>=3.5",
