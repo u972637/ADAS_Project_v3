@@ -49,12 +49,12 @@ uv run main.py
 `HEADLESS = True`로 바꾸고 Ctrl+C로 종료한다. WAV 재생 명령은 Linux에서
 `aplay`, macOS에서 `afplay`이며 `AUDIO_PLAYER_COMMAND`로 바꿀 수 있다.
 
-모델·카메라 없이 클래스별 음성 재생을 확인하려면 `play_audio.py`의 `CLASS_ID`를
+모델·카메라 없이 클래스별 음성 재생을 확인하려면 `tools/play_audio.py`의 `CLASS_ID`를
 설정하고 실행한다. 예시 매핑에서는 `0`이 멧돼지, `1`이 고라니다. 한 번 실행할
 때 해당 그룹에서 WAV 하나를 무작위로 선택해 재생한다.
 
 ```bash
-uv run python play_audio.py
+uv run python tools/play_audio.py
 ```
 
 동물 YOLO가 종을 직접 구분해야 현재 기본 분류기를 사용할 수 있다. 동물만

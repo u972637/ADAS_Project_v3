@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Play one random WAV using a simulated wildlife classification result."""
 
+import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import settings
 from wildlife import WildlifeDeterrent
