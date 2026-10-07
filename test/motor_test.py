@@ -5,7 +5,7 @@
 
 키보드로 가상 코 좌표를 직접 입력해 Tracker.update() 를 호출합니다.
 모터 없이 실행하면 어떤 좌표가 전송될지만 출력합니다.
---motor 사용 시 motor.dm4310_tracker.Tracker (Damiao DM4310-2EC, CAN, 1000Hz)를 구동합니다.
+--motor 사용 시 motor.dm4310_tracker.Tracker (Damiao DM-J4310-2EC, CAN, 1000Hz)를 구동합니다.
 
 실행:
   uv run python test/motor_test.py            # DRY_RUN (좌표 출력만)
@@ -13,6 +13,7 @@
 """
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -63,8 +64,10 @@ def print_status(tracker):
     yaw_pos, yaw_vel, yaw_tau = tracker.get_state("yaw")
     pitch_pos, pitch_vel, pitch_tau = tracker.get_state("pitch")
     print(f"    [STATUS] freq={freq:6.1f}Hz  "
-          f"yaw(pos={yaw_pos:+.3f}rad vel={yaw_vel:+.3f}rad/s tau={yaw_tau:+.3f}Nm)  "
-          f"pitch(pos={pitch_pos:+.3f}rad vel={pitch_vel:+.3f}rad/s tau={pitch_tau:+.3f}Nm)")
+          f"yaw(pos={yaw_pos:+.3f}rad/{math.degrees(yaw_pos):+.1f}° "
+          f"vel={yaw_vel:+.3f}rad/s tau={yaw_tau:+.3f}Nm)  "
+          f"pitch(pos={pitch_pos:+.3f}rad/{math.degrees(pitch_pos):+.1f}° "
+          f"vel={pitch_vel:+.3f}rad/s tau={pitch_tau:+.3f}Nm)")
 
 
 def send(tracker, label, x, y):
@@ -106,7 +109,7 @@ def main(use_motor: bool):
         try:
             from motor.dm4310_tracker import Tracker
             tracker = Tracker()
-            print("[OK] Damiao DM4310-2EC 모터 연결 완료")
+            print("[OK] Damiao DM-J4310-2EC 모터 연결 완료")
         except Exception as e:
             print(f"[WARN] 모터 연결 실패 → DRY_RUN 으로 전환: {e}")
     else:
@@ -143,6 +146,6 @@ def main(use_motor: bool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="모터 단독 테스트 (웹캠 없음)")
     parser.add_argument("--motor", action="store_true",
-                        help="실제 Damiao DM4310-2EC 모터 제어 활성화")
+                        help="실제 Damiao DM-J4310-2EC 모터 제어 활성화")
     args = parser.parse_args()
     main(use_motor=args.motor)

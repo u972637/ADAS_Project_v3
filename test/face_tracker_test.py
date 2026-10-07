@@ -5,7 +5,7 @@
 
 - 웹캠으로 얼굴을 검출하고 코 위치를 추정
 - 화면 중심 기준으로 방향(LEFT/RIGHT/UP/DOWN) 표시
-- Damiao DM4310-2EC 모터가 연결돼 있으면 motor.dm4310_tracker.Tracker 로 신호 전송
+- Damiao DM-J4310-2EC 모터가 연결돼 있으면 motor.dm4310_tracker.Tracker 로 신호 전송
 - 모터 없이도 방향 확인만 가능 (DRY_RUN 모드)
 
 실행:
@@ -124,7 +124,7 @@ def main(use_motor: bool):
         try:
             from motor.dm4310_tracker import Tracker
             tracker = Tracker()
-            print("[OK] Damiao DM4310-2EC 모터 연결 완료")
+            print("[OK] Damiao DM-J4310-2EC 모터 연결 완료")
         except Exception as e:
             print(f"[WARN] 모터 연결 실패 → DRY_RUN 으로 전환: {e}")
 
@@ -191,6 +191,6 @@ def main(use_motor: bool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="얼굴 추적 테스트")
     parser.add_argument("--motor", action="store_true",
-                        help="Damiao DM4310-2EC 모터 제어 활성화 (기본: 화면 표시만)")
+                        help="Damiao DM-J4310-2EC 모터 제어 활성화 (기본: 화면 표시만)")
     args = parser.parse_args()
     main(use_motor=args.motor)

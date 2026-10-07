@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DM4310-2EC 영점(0도) 설정 유틸리티
+DM-J4310-2EC 영점(0도) 설정 유틸리티
 
 "0도를 어디로 할지"는 숫자로 알려주는 게 아니라, 모터를 손으로 원하는 자세로
 돌려놓은 뒤 영점 설정 명령을 보내면 모터가 "지금 내가 있는 그 자리"를 스스로
@@ -17,6 +17,7 @@ DM4310-2EC 영점(0도) 설정 유틸리티
   uv run python test/zero_actuator.py
 """
 
+import math
 import os
 import sys
 import time
@@ -44,6 +45,15 @@ def read_position(ctrl: MotorControl, motor: Motor) -> float:
     return motor.getPosition()
 
 
+def fmt_rad(rad: float) -> str:
+    """라디안 값을 'rad(도)' 형태로 함께 보여주는 포맷터.
+
+    CAN 프로토콜/모터 내부는 전부 라디안 기준이라 계산은 라디안으로 하지만,
+    사람이 읽을 땐 도(degree) 가 더 직관적이라 항상 같이 표시한다.
+    """
+    return f"{rad:+.4f}rad ({math.degrees(rad):+.1f}°)"
+
+
 def main():
     print(f"[..] {DEVICENAME} 연결 중 (baud={BAUDRATE})...")
     ser = serial.Serial(DEVICENAME, BAUDRATE, timeout=0.001)
@@ -61,17 +71,21 @@ def main():
             label = AXIS_LABEL[axis]
 
             before = read_position(ctrl, motor)
-            print(f"[{label}] 현재 각도 = {before:+.4f} rad "
-                  f"({before * 180 / 3.141592653589793:+.1f}°)")
+            print(f"[{label}] 현재 각도 = {fmt_rad(before)}")
 
             input(f"  → 짐벌을 {label} 원하는 0도 위치(정면/수평)로 손으로 맞춘 뒤 Enter 를 누르세요...")
 
             ctrl.set_zero_position(motor)
             time.sleep(0.1)
 
+            # set_zero_position() 만으로는 플래시에 저장되지 않고 전원이
+            # 꺼지면 되돌아간다(공식 문서 기준) — save_motor_param() 으로
+            # 반드시 플래시에 써야 영구적으로 유지된다.
+            ctrl.save_motor_param(motor)
+            time.sleep(0.1)
+
             after = read_position(ctrl, motor)
-            print(f"  [DONE] 영점 설정 완료 → 새 각도 = {after:+.4f} rad "
-                  f"({after * 180 / 3.141592653589793:+.1f}°, 0에 가까워야 정상)\n")
+            print(f"  [DONE] 영점 설정 완료 → 새 각도 = {fmt_rad(after)} (0에 가까워야 정상)\n")
 
         print("모든 축 영점 설정 완료. 전원을 꺼도 유지됩니다 — 이제 main.py/motor_test.py를")
         print("정상적으로 실행하면 이 자세가 0 rad(중앙) 기준이 됩니다.")

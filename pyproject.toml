@@ -1,7 +1,7 @@
 [project]
 name = "adas-project"
 version = "0.1.0"
-description = "Camera, YOLO, and Damiao DM4310-2EC (CAN) tracking scripts for an ADAS project."
+description = "Camera, YOLO, and Damiao DM-J4310-2EC (CAN) tracking scripts for an ADAS project."
 requires-python = ">=3.10,<3.11"
 dependencies = [
     "flask>=3.0",
