@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DM-J4310-2EC 2축(Yaw-Pitch) CAN MIT모드 얼굴(코) 추적 - 모터 제어 모듈
+DM-J4310-2EC 2축(Yaw-Pitch) CAN MIT모드 대상 추적 모터 제어 모듈.
 
-legacy/face_tracker_xl430_06_14.py(Dynamixel, RS485 펄스, 200Hz)를
-Damiao DM-J4310-2EC(CAN, MIT모드, 1000Hz)로 이식한 버전.
-
-역할 분담은 기존과 동일
-  - 카메라/코 검출(좌표 계산)은 외부 코드(detection/ 패키지)가 담당
-  - 이 파일은 "코 좌표 (x, y) -> 모터 명령" 부분만 담당
-  - 사용법: tracker.update(nose_x, nose_y) 를 검출 루프(약 30Hz)에서 매 프레임 호출
+카메라/동물 검출은 외부 코드가 담당하고, 이 모듈은 대상의 화면 좌표를
+모터 명령으로 바꾼다. tracker.update(x, y)를 검출된 프레임마다 호출한다.
 
 클로즈드 루프 설계 (호스트 측 피드백)
   이전 버전은 호스트가 내부적으로 시뮬레이션한(quintic spline) 위치를 기준으로
@@ -35,7 +30,7 @@ update() 동작 (검출 루프, ~30Hz)
 준비물
   - Damiao 전용 USB-CAN 동글, /dev/ttyUSBx 로 연결 (motor/DM_CAN.py 참고, 921600 baud)
   - 두 모터의 CAN ID가 Yaw=0x01, Pitch=0x02(MasterID 0x11/0x12)로 설정돼
-    있어야 함 — test/actuator_conn_test.py 의 "CAN ID 찾기/할당"(--step id)로
+    있어야 함 — tools/actuator_conn_test.py 의 "CAN ID 찾기/할당"(--step id)로
     Windows 전용 소프트웨어 없이 CAN 통신만으로 확인/변경 가능
   - MIT 모드는 __init__() 에서 매번 자동으로 전환(switchControlMode)하므로
     별도 사전 설정 불필요 (새 모터는 기본값이 MIT이지만, 혹시 다른 모드로
@@ -83,9 +78,9 @@ AXES = ("yaw", "pitch")
 # 2) 화면 / 추적 파라미터
 # ============================================================
 
-# 검출기(detection/)가 넘겨주는 좌표가 기준으로 삼는 해상도.
-# Arducam B0538C 실제 캡처 해상도(2592x1944)와 동일하게 맞춤 — 별도 트래커
-# 좌표계로 스케일하지 않고 카메라 픽셀 좌표를 그대로 받는다.
+# 검출기가 넘겨주는 좌표가 기준으로 삼는 해상도.
+# Arducam B0538C 목표 캡처 해상도(2592x1944)와 동일하다. 다른 해상도로
+# 검출한 경우 호출자가 이 좌표계로 스케일해야 한다.
 FRAME_W, FRAME_H   = 2592, 1944
 CENTER_X, CENTER_Y = FRAME_W // 2, FRAME_H // 2
 
@@ -97,7 +92,7 @@ CENTER_X, CENTER_Y = FRAME_W // 2, FRAME_H // 2
 #   초점거리 EFL = 3.6mm, F수 = F2.8, 픽셀 피치 = 2.2µm (센서: OG05B1B)
 #
 # 레티리니어 렌즈는 광축에서 x만큼 떨어진 점의 각도가 atan(x/f) 이고,
-# 우리 제어 목표 자체가 "코를 화면 중앙 근처로 유지"하는 것이라 x가 작을 때
+# 제어 목표가 대상을 화면 중앙 근처로 유지하는 것이라 x가 작을 때
 # atan(x/f) ≈ x/f 로 선형 근사가 잘 맞는다. 화면 전체 화각(FOV)이 스펙으로
 # 주어졌으므로, 화면 전체에 각도가 픽셀에 선형 비례한다고 가정하면:
 #
@@ -272,9 +267,9 @@ class Tracker:
     # 핵심 제어 루프: 검출 루프에서 매 프레임 호출
     # --------------------------------------------------------
 
-    def update(self, nose_x, nose_y):
+    def update(self, target_x, target_y):
         """
-        픽셀 좌표(30fps 검출 주기) → 목표 각도 스텝 계산 → target 갱신.
+        대상 픽셀 좌표(검출 프레임마다) → 목표 각도 스텝 계산 → target 갱신.
 
         target 은 항상 '모터가 실제로 보고한 현재 위치'(self._current)를
         기준으로 계산한다. 호스트가 시뮬레이션한 값이 아니라 실측값을 쓰므로
@@ -282,11 +277,11 @@ class Tracker:
         실제 모터 전송은 _control_thread(1000Hz) 가 담당하므로 이 함수는
         블로킹 없음.
         """
-        if nose_x is None or nose_y is None:
+        if target_x is None or target_y is None:
             return
 
-        err_x = CENTER_X - nose_x
-        err_y = CENTER_Y - nose_y
+        err_x = CENTER_X - target_x
+        err_y = CENTER_Y - target_y
 
         if abs(err_x) < DEADZONE_PX:
             err_x = 0
@@ -332,22 +327,3 @@ class Tracker:
         for axis in AXES:
             self._ctrl.disable(self._motor[axis])
         self._serial.close()
-
-
-# ============================================================
-# 사용 예시
-# ============================================================
-# def get_nose_from_your_detector():
-#     raise NotImplementedError("여기에 코 좌표 검출 코드를 연결하세요")
-
-if __name__ == "__main__":
-    tracker = Tracker()
-    try:
-        while True:
-            x, y = get_nose_from_your_detector()
-            tracker.update(x, y)
-            time.sleep(0.033)   # 약 30 Hz (검출 루프)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        tracker.close()

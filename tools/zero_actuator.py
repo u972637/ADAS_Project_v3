@@ -14,7 +14,7 @@ DM-J4310-2EC 영점(0도) 설정 유틸리티
 대신 motor.DM_CAN 을 직접 사용해 enable()을 호출하지 않는다.
 
 실행:
-  uv run python test/zero_actuator.py
+  uv run python tools/zero_actuator.py
 """
 
 import math
@@ -87,7 +87,7 @@ def main():
             after = read_position(ctrl, motor)
             print(f"  [DONE] 영점 설정 완료 → 새 각도 = {fmt_rad(after)} (0에 가까워야 정상)\n")
 
-        print("모든 축 영점 설정 완료. 전원을 꺼도 유지됩니다 — 이제 main.py/motor_test.py를")
+        print("모든 축 영점 설정 완료. 전원을 꺼도 유지됩니다 — 이제 main.py를")
         print("정상적으로 실행하면 이 자세가 0 rad(중앙) 기준이 됩니다.")
 
     except (EOFError, KeyboardInterrupt):

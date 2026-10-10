@@ -27,19 +27,19 @@ DM-J4310-2EC 액추에이터 연결 테스트 — 신규/단독 모터 1개를 Y
 
 실행 예시:
   # 메뉴 없이 전체(연결→신호조회→MIT테스트)를 바로 실행
-  uv run python test/actuator_conn_test.py --id 0x01
+  uv run python tools/actuator_conn_test.py --id 0x01
 
   # 신호 조회만
-  uv run python test/actuator_conn_test.py --id 0x01 --step ping
+  uv run python tools/actuator_conn_test.py --id 0x01 --step ping
 
   # 영점 설정만
-  uv run python test/actuator_conn_test.py --id 0x01 --step zero
+  uv run python tools/actuator_conn_test.py --id 0x01 --step zero
 
   # CAN ID를 모를 때: 1~10번 스캔 후 원하는 ID로 변경
-  uv run python test/actuator_conn_test.py --step id
+  uv run python tools/actuator_conn_test.py --step id
 
   # 특정 각도(도)로 이동해서 그 자리 유지 (Ctrl+C로 종료)
-  uv run python test/actuator_conn_test.py --id 0x01 --step goto --target-deg 15
+  uv run python tools/actuator_conn_test.py --id 0x01 --step goto --target-deg 15
 """
 
 import argparse

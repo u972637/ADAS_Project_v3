@@ -42,7 +42,7 @@ motor/dm4310_tracker.py 의 실제 운영 Tracker.update(x, y) 에 그대로
 코 좌표는 항상 프레임 중앙(Tracker 기준 0°, 0°)에서 시작한다.
 
 실행:
-  uv run python test/motor_manual_control.py
+  uv run python tools/motor_manual_control.py
 """
 
 import math
