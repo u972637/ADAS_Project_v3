@@ -14,7 +14,7 @@ import settings
 from wildlife import WildlifeDeterrent
 
 
-CLASS_ID = 0  # Change to 1 for water_deer with the example class mapping.
+CLASS_ID = 0  # 0=boar audio, 1=water_deer audio (model class name: deer).
 
 
 def main() -> None:
