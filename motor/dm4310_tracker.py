@@ -119,8 +119,8 @@ RAD_PER_PIXEL_Y = math.radians(VFOV_DEG) / FRAME_H   # ≈ 0.000593 rad/px, err_
 # 즉 대상 픽셀이 CENTER 보다 작은 쪽(= err 가 양수)에 있을 때는 그쪽으로
 # "더" 보내면 안 되고(이미 0쪽에 가까운데 더 밀면 더 벗어남), 반대 부호로
 # 보정해야 중앙으로 수렴한다 → 두 축 모두 SIGN = -1.
-SIGN_YAW   = -1
-SIGN_PITCH = -1
+SIGN_YAW   = 1
+SIGN_PITCH = 1
 
 DEADZONE_PX  = 0
 MAX_STEP_RAD = 0.6   # update() 한 번에 허용할 최대 목표각 이동량 — 튀는 검출값 방어

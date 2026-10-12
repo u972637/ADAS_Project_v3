@@ -67,12 +67,7 @@ from detection.yolo_pose import YoloPoseDetector
 # ──────────────────────────────────────────────
 # 설정
 # ──────────────────────────────────────────────
-CAMERA_IDX   = 4                     # Arducam B0538C 카메라 인덱스 — 임시값, 미검증.
-                                      # 아직 카메라를 연결 전이라 실제 몇 번 /dev/video*
-                                      # 로 잡힐지 모른다(USB-CAN 동글도 예상과 달리
-                                      # /dev/ttyUSB0 아닌 /dev/ttyACM0 로 잡혔던 전례
-                                      # 있음). 연결 후 `ls /dev/video*`/`v4l2-ctl --list-devices`
-                                      # 로 반드시 재확인할 것.
+CAMERA_IDX   = 4                     # Arducam B0538C 카메라 인덱스 — 실측 확인됨 (/dev/video4)
 MODEL_PATH   = "yolov8n-pose.pt"     # YOLO pose 모델
 CAMERA_FOURCC = "YUY2"               # B0538C(OG05B1B) 네이티브 출력 포맷 (UVC 표준, Bayer 아님)
 FRAME_W, FRAME_H = 2592, 1944        # B0538C 최대 해상도 @ 25fps (USB 3.0 기준)

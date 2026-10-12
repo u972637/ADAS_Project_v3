@@ -6,12 +6,9 @@
 
 ## 현재 진행 상황 / 알아둘 것
 
-- **카메라 미연결 — `CAMERA_IDX`는 아직 미검증값이다.** Arducam B0538C를 아직
-  실제로 연결하지 않아서 `/dev/video*`로 몇 번이 잡힐지 모른다. 지금
-  `main.py`의 `CAMERA_IDX = 4`는 임시값이고, 실제 연결 후
-  `ls /dev/video*` / `v4l2-ctl --list-devices`로 재확인·수정이 필요하다 —
-  USB-CAN 동글도 예상했던 `/dev/ttyUSB0`가 아니라 `/dev/ttyACM0`으로 잡힌
-  전례가 있어서, 카메라도 예상과 다른 인덱스로 잡힐 가능성을 열어둘 것.
+- **카메라 인덱스 확인 완료**: Arducam B0538C는 `/dev/video4` — `main.py`의
+  `CAMERA_IDX = 4`가 실제로 맞다고 확인됨 (`test/camera_test.py`/
+  `actuator_test.sh` 8번으로 검증).
 - **액추에이터 CAN ID 확정**: Yaw = CAN ID `0x01`, Pitch = CAN ID `0x02`
   (`motor/dm4310_tracker.py`).
 - **Yaw/Pitch 부호(SIGN) 실측 확인 및 버그 수정 완료**: 실제 하드웨어로
@@ -37,6 +34,7 @@
 ```
 main.py                    실행 진입점 — 카메라 + 검출 + 트래킹 통합 루프
 motor_start.sh             지정한 픽셀 좌표로 Yaw/Pitch 둘 다 이동 후 유지 (카메라 없이)
+camera_moter_test.sh       카메라 화면 위 wasd 가상 코 좌표 + 방향키 모터 조그 메뉴
 actuator_test.sh           액추에이터 테스트 메뉴(포트지정/신호조회/위치신호/제로잉) 셸 스크립트
 detection/
   base.py                  PoseDetector 인터페이스, PersonPose 데이터 구조
@@ -56,6 +54,7 @@ test/
   zero_actuator.py           DM-J4310-2EC 영점(0도) 설정 유틸리티
   motor_goto.py              motor_start.sh 가 호출하는 실제 구현 (Tracker 두 축 모두 구동)
   motor_manual_control.py    Yaw/Pitch 방향키(a/d, w/s) 수동 위치 제어 + 중앙 복귀
+  camera_test.py             카메라 단독 테스트 (모터/YOLO 없이 미리보기만, actuator_test.sh 8번이 호출)
 ```
 
 ## motor_start.sh — 픽셀 좌표로 짐벌 이동
@@ -80,15 +79,19 @@ Yaw(CAN 1)/Pitch(CAN 2)를 방향키로 직접 조금씩 밀어보는 테스트 
 
 ```bash
 uv run python test/motor_manual_control.py
+# 또는 루트에서:
+./camera_moter_test.sh
 ```
 
-실행하면 메뉴를 고르기 전에 먼저 **두 축을 중앙(0°, 0°)으로 램프
-이동**(`GO_CENTER_DURATION`=1.5초 재사용)시킨 뒤 메뉴를 보여준다.
+실행하면 메뉴를 고르기 전에 먼저 **두 축을 기본 자세(`DEFAULT_YAW_DEG`=0°,
+`DEFAULT_PITCH_DEG`=30°)로 램프 이동**(`GO_CENTER_DURATION`=1.5초 재사용)
+시킨 뒤 메뉴를 보여준다 — 테스트용 기본값이라 필요하면 그 두 상수만
+고치면 된다.
 
 ```
 1. START (아직 구현되지 않음)
 2. 방향키로 위치 제어 (모터 각도 직접 조그)
-3. 가상 코 좌표 테스트 (wasd로 코 좌표 이동 → 실제 Tracker)
+3. 가상 코 좌표 테스트 (wasd로 코 좌표 이동, g로 그 위치만 1회 전송)
 0. 종료
 ```
 
@@ -104,14 +107,19 @@ uv run python test/motor_manual_control.py
 - Yaw: `YAW_MIN_DEG`/`YAW_MAX_DEG` = -175 / 175
 - Pitch: `PITCH_MIN_DEG`/`PITCH_MAX_DEG` = -30 / 180
 
-**3번**: 2번과 달리 모터 각도를 직접 보내지 않고, **"코 좌표"**(노란 점,
-`main.py`가 YOLO 검출로 넘겨주는 값과 같은 역할)를 `a`/`d`/`w`/`s`로
-움직여 실제 운영 `Tracker.update(x, y)`에 그대로 흘려보낸다 — 픽셀→각도
-환산(`RAD_PER_PIXEL_X/Y`), 부호(`SIGN_YAW`/`SIGN_PITCH`), 가동범위
-(`YAW_RANGE_RAD`/`PITCH_RANGE_RAD`) 등 `motor/dm4310_tracker.py`의 실제
-로직 전체를 그대로 검증할 수 있다. 코 좌표는 항상 프레임 중앙(Tracker
-기준 0°, 0°)에서 시작하며, OpenCV 창에 초록 중앙 십자선과 노란 점으로
-현재 위치를 보여준다. `q` 또는 `ESC`로 메뉴 복귀.
+**3번**: 2번과 달리 모터 각도를 직접 보내지 않고, **실제 카메라 화면을
+띄운 뒤 그 위에서** `a`/`d`/`w`/`s`로 **"코 좌표"**(노란 점, `main.py`가
+YOLO 검출로 넘겨주는 값과 같은 역할)를 **먼저 원하는 자리로 옮겨두고**,
+**`g`를 눌렀을 때만** 그 좌표를 실제 운영 `Tracker.update(x, y)`에 **딱
+한 번** 흘려보낸다 — wasd로 점을 움직이는 동안은 `g`를 누르기 전까지
+모터에 전혀 영향이 없다. 픽셀→각도 환산(`RAD_PER_PIXEL_X/Y`), 부호
+(`SIGN_YAW`/`SIGN_PITCH`), 가동범위(`YAW_RANGE_RAD`/`PITCH_RANGE_RAD`)
+등 `motor/dm4310_tracker.py`의 실제 로직 전체를 그대로 검증할 수 있다.
+카메라는 `test/camera_test.py`의 `open_camera()`/`read_frame()`을 그대로
+재사용(`DEFAULT_CAMERA_IDX=4`). 코 좌표는 항상 프레임 중앙(Tracker 기준
+0°, 0°)에서 시작하며, 화면에 **노란 점(지금 위치)**과 **빨간 점(마지막
+으로 `g`로 실제 전송한 위치)**을 같이 보여준다. `q` 또는 `ESC`로 메뉴
+복귀.
 
 2번과 3번은 같은 시리얼 포트를 써서 동시에 열 수 없으므로, 3번에
 들어가면 2번용 연결을 잠깐 닫았다가 메뉴로 돌아오면 다시 연다
@@ -238,6 +246,7 @@ uv run python test/motor_manual_control.py
 5. 위치 이동 (특정 각도로 이동 후 유지)
 6. 제로잉 (영점 설정)
 7. 게인 설정 (Kp/Kd/이동각/유지시간, 이번 실행만 적용)
+8. 카메라 테스트 (CAN ID 불필요)
 0. 종료
 ```
 
@@ -277,6 +286,13 @@ Yaw/Pitch 양쪽을 다 점검하려면 1번 또는 2번을 다시 선택해서 
 시작하고 싶다"면 `actuator_conn_test.py` 상단의 해당 상수를 직접
 수정해야 한다(각 상수 위에 의미·단위·안전 범위 주석이 달려 있다).
 
+**8번(카메라 테스트)**은 모터/CAN과 완전히 무관하다 — CAN ID 지정 여부와
+상관없이 바로 실행된다. `test/camera_test.py`를 호출해 Arducam B0538C를
+열고 미리보기 창(해상도/실측 fps 오버레이 포함)을 띄운다. 카메라 인덱스를
+입력하라고 물어보는데, **Enter만 누르면 기본값(4)**으로 시도한다 — 아직
+카메라를 연결해본 적이 없어 실제 `/dev/video*` 인덱스를 모르므로, 안
+되면 다른 숫자(0, 1, 2 ...)로 다시 시도해볼 것. `q`/`ESC`로 종료.
+
 ## Setup
 
 ```bash
@@ -285,11 +301,10 @@ uv sync
 ```
 
 하드웨어 준비 (실제 모터 투입 전 필수 확인):
-- 카메라: Arducam B0538C(OG05B1B, 5MP 흑백 글로벌 셔터, USB 3.0). **아직
-  미연결 상태** — 연결 전까지는 `main.py`의 `CAMERA_IDX = 4`가 실제로
-  맞을지 알 수 없다. 연결 후 반드시 `ls /dev/video*` 등으로 실제 인덱스를
-  확인하고 다르면 수정할 것. USB 3.0 연결 시 2592×1944 @ 25fps가 스펙상
-  최대치(USB 2.0은 5fps로 급감)
+- 카메라: Arducam B0538C(OG05B1B, 5MP 흑백 글로벌 셔터, USB 3.0).
+  `main.py`의 `CAMERA_IDX = 4`가 `/dev/video4`로 맞게 잡히는 것 실측
+  확인됨. USB 3.0 연결 시 2592×1944 @ 25fps가 스펙상 최대치(USB 2.0은
+  5fps로 급감)
 - Damiao 전용 USB-CAN 동글 — 이 프로젝트 기준 `/dev/ttyACM0`으로 잡힘(동글
   칩셋에 따라 `/dev/ttyUSB0`로 잡힐 수도 있음, `motor/dm4310_tracker.py`의
   `DEVICENAME`에 실측값 반영돼 있음). 다른 PC에 연결하면 `ls /dev/ttyUSB*
@@ -357,4 +372,10 @@ uv run python test/zero_actuator.py
 
 # Yaw/Pitch 방향키 수동 제어 + 가상 코 좌표 테스트 메뉴
 uv run python test/motor_manual_control.py
+./camera_moter_test.sh
+
+# 카메라만 단독 테스트 (모터/YOLO 없이 미리보기)
+uv run python test/camera_test.py
+uv run python test/camera_test.py --index 0   # 인덱스 모르면 0,1,2... 시도
+uv run python test/camera_test.py --list      # 0~9번을 순서대로 열어보고 결과만 출력
 ```

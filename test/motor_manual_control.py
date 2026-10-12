@@ -7,8 +7,10 @@ motor/dm4310_tracker.py 와 동일한 연결 정보·게인(KP/KD)을 그대로 
 두 축을 동시에 구동한다 — main.py 의 카메라/YOLO 파이프라인 없이, 키보드로
 직접 각도를 조금씩 밀어보고 싶을 때 쓴다.
 
-실행하면 메뉴를 고르기 전에 먼저 두 축을 중앙(0°, 0°)으로 램프 이동시킨다
-(motor/dm4310_tracker.py 의 GO_CENTER_DURATION 과 동일한 지속시간 재사용).
+실행하면 메뉴를 고르기 전에 먼저 두 축을 기본 각도(DEFAULT_YAW_DEG=0°,
+DEFAULT_PITCH_DEG=30°)로 램프 이동시킨다(motor/dm4310_tracker.py 의
+GO_CENTER_DURATION 과 동일한 지속시간 재사용). 테스트용 기본 자세이니
+필요하면 이 두 상수만 고치면 된다.
 
 메뉴:
   1. START (아직 구현되지 않음 — 추후 main.py 자동 추적(Tracker)과 연결 예정)
@@ -33,13 +35,16 @@ motor/dm4310_tracker.py 와 동일한 연결 정보·게인(KP/KD)을 그대로 
 
 3번 진입 시 조작 — main.py 가 YOLO 검출로 넘겨주는 "코 좌표"를 흉내낸다.
 2번과 달리 모터 각도를 직접 보내는 게 아니라, 노란 점(가상 코 좌표)을
-motor/dm4310_tracker.py 의 실제 운영 Tracker.update(x, y) 에 그대로
+먼저 wasd 로 원하는 자리에 옮겨두고 g 를 눌렀을 때만 그 좌표를
+motor/dm4310_tracker.py 의 실제 운영 Tracker.update(x, y) 에 "딱 한 번"
 흘려보낸다 — 픽셀→각도 변환(RAD_PER_PIXEL_X/Y), 부호(SIGN_YAW/PITCH),
 가동범위(YAW_RANGE_RAD/PITCH_RANGE_RAD) 등 실제 로직을 그대로 검증한다:
   a : 코 좌표 x -NOSE_STEP_PX (왼쪽)   d : 코 좌표 x +NOSE_STEP_PX (오른쪽)
   w : 코 좌표 y -NOSE_STEP_PX (위)     s : 코 좌표 y +NOSE_STEP_PX (아래)
+  g : 지금 노란 점 위치로 Tracker.update() 를 1회 호출 (화면에 빨간 점으로 표시)
   q 또는 ESC : 메뉴로 복귀
-코 좌표는 항상 프레임 중앙(Tracker 기준 0°, 0°)에서 시작한다.
+코 좌표는 항상 프레임 중앙(Tracker 기준 0°, 0°)에서 시작하며, wasd로
+점만 움직이는 동안은 g 를 누르기 전까지 모터에 아무 영향이 없다.
 
 실행:
   uv run python test/motor_manual_control.py
@@ -53,12 +58,14 @@ import termios
 import time
 import tty
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(TEST_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+if TEST_DIR not in sys.path:
+    sys.path.insert(0, TEST_DIR)
 
 import cv2
-import numpy as np
 import serial
 
 from motor.DM_CAN import Motor, MotorControl, Control_Type
@@ -68,6 +75,10 @@ from motor.dm4310_tracker import (
     KP, KD, GO_CENTER_DURATION,
     Tracker, FRAME_W, FRAME_H, CENTER_X, CENTER_Y,
 )
+# camera_test.py 는 같은 test/ 폴더에 있는 가벼운 카메라 열기/프레임 변환
+# 유틸리티 — main.py 를 그대로 import하면 ultralytics/torch 까지 끌려와
+# 무거워지므로, 카메라 관련 부분만 재사용한다.
+from camera_test import DEFAULT_CAMERA_IDX, open_camera as cam_open_camera, read_frame as cam_read_frame
 
 AXES = ("yaw", "pitch")
 CAN_ID = {"yaw": CAN_ID_YAW, "pitch": CAN_ID_PITCH}
@@ -75,7 +86,13 @@ MASTER_ID = {"yaw": MASTER_ID_YAW, "pitch": MASTER_ID_PITCH}
 TAU_FF = 0.0
 
 # 방향키 한 번(자동반복 포함) 입력당 움직일 각도(도). 보수적으로 작게 잡음.
-STEP_DEG = 0.3
+STEP_DEG = 1.0
+
+# 테스트 시작 시 램프 이동할 기본 자세(도). 짐벌이 완전히 수평(0,0)이 아니라
+# 보통 사람 얼굴 높이를 보도록 pitch 를 띄워둔 상태를 기본으로 쓴다.
+# 나중에 바꾸고 싶으면 이 두 상수만 고치면 됨.
+DEFAULT_YAW_DEG = 0.0
+DEFAULT_PITCH_DEG = 30.0
 
 # 안전 가동범위(도) — 나중에 이 값만 고치면 됨
 YAW_MIN_DEG,   YAW_MAX_DEG   = -175.0, 175.0
@@ -165,14 +182,17 @@ class ManualController:
         self.target_deg[axis] = clamp(self.target_deg[axis] + delta_deg, lo, hi)
 
     def ramp_to_center(self, duration: float = GO_CENTER_DURATION):
-        print(f"[중앙 복귀] {duration:.1f}초 동안 0°, 0° 로 이동합니다...")
+        """기본 자세(DEFAULT_YAW_DEG, DEFAULT_PITCH_DEG)로 선형 램프 이동."""
+        goal = {"yaw": DEFAULT_YAW_DEG, "pitch": DEFAULT_PITCH_DEG}
+        print(f"[기본 자세 복귀] {duration:.1f}초 동안 yaw={goal['yaw']:.0f}°, "
+              f"pitch={goal['pitch']:.0f}° 로 이동합니다...")
         start = dict(self.target_deg)
         steps = max(int(duration * CONTROL_FREQ), 1)
         dt = duration / steps
         for i in range(1, steps + 1):
             frac = i / steps
             for axis in AXES:
-                self.target_deg[axis] = start[axis] + (0.0 - start[axis]) * frac
+                self.target_deg[axis] = start[axis] + (goal[axis] - start[axis]) * frac
             self._send()
             time.sleep(dt)
         print(f"  완료: yaw={self.current_deg('yaw'):+.1f}°  "
@@ -237,42 +257,68 @@ def run_manual_jog(mc: ManualController):
 
 def run_virtual_nose_test():
     """
-    wasd 로 "가상 코 좌표"(노란 점)를 움직여 실제 운영 Tracker.update(x, y)
-    로 흘려보낸다 — 2번(모터 각도 직접 조그)과 달리 main.py 가 YOLO 검출로
-    넘겨주는 입력을 그대로 흉내내는 것이라, 픽셀→각도 환산·부호·가동범위
-    로직 전체(motor/dm4310_tracker.py)를 실제로 거친다.
+    실제 카메라 화면을 띄우고, 그 위에서 wasd 로 "가상 코 좌표"(노란 점)를
+    먼저 원하는 자리에 옮겨두고, g 를 눌렀을 때만 그 좌표를 실제 운영
+    Tracker.update(x, y) 에 "딱 한 번" 흘려보낸다 — main.py 가 YOLO 검출로
+    넘겨주는 한 프레임의 입력을 흉내내는 것이라, 픽셀→각도 환산·부호·
+    가동범위 로직 전체(motor/dm4310_tracker.py)를 그대로 거친다.
+
+    점을 움직이는 것과 실제로 모터에 신호를 보내는 것을 분리해둔 이유:
+    wasd 로 점만 움직이는 동안은 모터에 아무 영향이 없으니, 원하는 위치를
+    여유 있게 잡아본 뒤 g 로 "이 위치로 가봐"를 명시적으로 한 번만
+    시켜볼 수 있다 (매 프레임 자동으로 보내던 이전 방식과 다름).
+
+    카메라는 main.py 와 같은 설정(DEFAULT_CAMERA_IDX=4, 실측 확인됨)으로
+    camera_test.py 의 open_camera()/read_frame() 을 그대로 재사용한다.
 
     2번과 포트를 동시에 쓸 수 없으므로(같은 시리얼 장치), 이 함수 안에서
     자체적으로 Tracker 를 새로 열고 끝나면 닫는다 — 호출하는 쪽(main())이
     먼저 ManualController 를 닫아둔 상태여야 한다.
     """
-    print("\n[가상 코 좌표 테스트] a/d=좌/우, w/s=상/하 로 노란 점(코 좌표) 이동")
+    print("\n[가상 코 좌표 테스트] a/d=좌/우, w/s=상/하 로 노란 점 이동, g=그 위치로 신호 1회 전송")
     print(f"  스텝: {NOSE_STEP_PX}px/입력  시작 위치: 중앙({CENTER_X},{CENTER_Y}) "
           f"= Tracker 기준 0°,0°  — q 또는 ESC 로 메뉴 복귀\n")
+
+    print(f"[..] 카메라 index={DEFAULT_CAMERA_IDX} 여는 중...")
+    cap = cam_open_camera(DEFAULT_CAMERA_IDX)
+    if cap is None:
+        print(f"[ERROR] 카메라(index={DEFAULT_CAMERA_IDX})를 열 수 없습니다 — 메뉴로 복귀합니다.")
+        return
 
     print("[..] Tracker 연결 중...")
     tracker = Tracker()
     print("[OK] 연결 완료 — 창이 뜨면 거기서 wasd 를 누르세요.")
 
     x, y = CENTER_X, CENTER_Y   # 코 좌표는 항상 중앙(=0°,0°)에서 시작
+    sent_xy = None   # 마지막으로 g 로 실제 전송한 좌표 (아직 없으면 None)
     disp_w, disp_h = int(FRAME_W * DISPLAY_SCALE), int(FRAME_H * DISPLAY_SCALE)
-    win_name = "Virtual Nose (q/ESC: back)"
+    win_name = "Virtual Nose on Camera (g:send once, q/ESC: back)"
     cv2.namedWindow(win_name)
 
     try:
         while True:
-            canvas = np.zeros((disp_h, disp_w, 3), dtype=np.uint8)
+            ok, frame = cam_read_frame(cap)
+            if not ok or frame is None:
+                time.sleep(0.01)
+                continue
+
+            disp = cv2.resize(frame, (disp_w, disp_h))
             cx, cy = disp_w // 2, disp_h // 2
-            cv2.line(canvas, (cx - 15, cy), (cx + 15, cy), (0, 160, 0), 1)
-            cv2.line(canvas, (cx, cy - 15), (cx, cy + 15), (0, 160, 0), 1)
+            cv2.line(disp, (cx - 15, cy), (cx + 15, cy), (0, 160, 0), 1)
+            cv2.line(disp, (cx, cy - 15), (cx, cy + 15), (0, 160, 0), 1)
 
             dot_x, dot_y = int(x * DISPLAY_SCALE), int(y * DISPLAY_SCALE)
-            cv2.circle(canvas, (dot_x, dot_y), 8, (0, 255, 255), -1)  # 노란 점(BGR)
-            cv2.putText(canvas, f"nose=({x},{y})", (10, 20),
+            cv2.circle(disp, (dot_x, dot_y), 8, (0, 255, 255), -1)  # 노란 점(BGR) — 아직 안 보낸 목표
+            if sent_xy is not None:
+                sx, sy = int(sent_xy[0] * DISPLAY_SCALE), int(sent_xy[1] * DISPLAY_SCALE)
+                cv2.circle(disp, (sx, sy), 5, (0, 0, 255), -1)   # 빨간 점 — 마지막으로 실제 전송한 위치
+            cv2.putText(disp, f"nose(yellow)=({x},{y})  sent(red)={sent_xy}", (10, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(disp, "g: send once to Tracker.update()", (10, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
 
-            cv2.imshow(win_name, canvas)
-            key = cv2.waitKey(33) & 0xFF   # ~30Hz, main.py 검출 루프 주기와 유사
+            cv2.imshow(win_name, disp)
+            key = cv2.waitKey(1) & 0xFF   # 카메라 자체 fps(~25)로 자연스럽게 제한됨
 
             if key in (ord('q'), 27):
                 break
@@ -284,12 +330,15 @@ def run_virtual_nose_test():
                 y = max(0, y - NOSE_STEP_PX)
             elif key == ord('s'):
                 y = min(FRAME_H, y + NOSE_STEP_PX)
-
-            tracker.update(x, y)
+            elif key == ord('g'):
+                tracker.update(x, y)
+                sent_xy = (x, y)
+                print(f"  [전송] ({x},{y}) 위치 신호를 Tracker.update() 로 1회 전송함")
     finally:
         cv2.destroyWindow(win_name)
+        cap.release()
         tracker.close()
-        print("\n[메뉴로 복귀] Tracker 연결 종료")
+        print("\n[메뉴로 복귀] 카메라/Tracker 연결 종료")
 
 
 # ──────────────────────────────────────────────

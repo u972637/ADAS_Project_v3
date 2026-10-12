@@ -22,6 +22,12 @@ class Motor:
         self.state_q = float(0)
         self.state_dq = float(0)
         self.state_tau = float(0)
+        # 피드백 프레임 data[0] 상위 니블(ERR) — 공식 프로토콜 기준 고장 코드.
+        # 0=정상, 8=과전압, 9=저전압, 0xA=과전류, 0xB=MOS과열, 0xC=코일과열,
+        # 0xD=통신끊김, 0xE=과부하. 원래 벤더 코드가 이 니블을 파싱하지 않고
+        # 버리고 있어서(위치 읽기는 되는데 토크가 하나도 안 나가는 상태를
+        # 구분할 방법이 없었음) 추가함.
+        self.state_err = 0
         self.SlaveID = SlaveID
         self.MasterID = MasterID
         self.MotorType = MotorType
@@ -29,10 +35,19 @@ class Motor:
         self.NowControlMode = Control_Type.MIT
         self.temp_param_dict = {}
 
-    def recv_data(self, q: float, dq: float, tau: float):
+    def recv_data(self, q: float, dq: float, tau: float, err: int = 0):
         self.state_q = q
         self.state_dq = dq
         self.state_tau = tau
+        self.state_err = err
+
+    def getError(self):
+        """
+        모터가 마지막 피드백 프레임에 실어보낸 고장 코드(0=정상) 반환.
+        0=정상, 8=과전압, 9=저전압, 0xA=과전류, 0xB=MOS과열, 0xC=코일과열,
+        0xD=통신끊김, 0xE=과부하
+        """
+        return self.state_err
 
     def getPosition(self):
         """
@@ -263,6 +278,9 @@ class MotorControl:
 
     def __process_packet(self, data, CANID, CMD):
         if CMD == 0x11:
+            # data[0] = ID(하위 4비트) | ERR(상위 4비트) — 공식 프로토콜 기준.
+            # 두 분기 모두 motor_id 판별 방식이 다를 뿐 data[0] 포맷은 같다.
+            err = (data[0] >> 4) & 0x0F
             if CANID != 0x00:
                 if CANID in self.motors_map:
                     q_uint = np.uint16((np.uint16(data[1]) << 8) | data[2])
@@ -275,7 +293,7 @@ class MotorControl:
                     recv_q = uint_to_float(q_uint, -Q_MAX, Q_MAX, 16)
                     recv_dq = uint_to_float(dq_uint, -DQ_MAX, DQ_MAX, 12)
                     recv_tau = uint_to_float(tau_uint, -TAU_MAX, TAU_MAX, 12)
-                    self.motors_map[CANID].recv_data(recv_q, recv_dq, recv_tau)
+                    self.motors_map[CANID].recv_data(recv_q, recv_dq, recv_tau, err)
             else:
                 MasterID=data[0] & 0x0f
                 if MasterID in self.motors_map:
@@ -289,7 +307,7 @@ class MotorControl:
                     recv_q = uint_to_float(q_uint, -Q_MAX, Q_MAX, 16)
                     recv_dq = uint_to_float(dq_uint, -DQ_MAX, DQ_MAX, 12)
                     recv_tau = uint_to_float(tau_uint, -TAU_MAX, TAU_MAX, 12)
-                    self.motors_map[MasterID].recv_data(recv_q, recv_dq, recv_tau)
+                    self.motors_map[MasterID].recv_data(recv_q, recv_dq, recv_tau, err)
 
 
     def __process_set_param_packet(self, data, CANID, CMD):

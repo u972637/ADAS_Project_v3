@@ -71,9 +71,9 @@ from motor.dm4310_tracker import DEVICENAME, BAUDRATE, MOTOR_TYPE
 # motor/dm4310_tracker.py 의 실제 운용값과 동일한 안전한 저값으로 맞춰둠.
 #   Kp: 위치 오차에 대한 강성(스프링) — DM4310 범위 0~500. 너무 높이면
 #       목표 도달 시 튕기거나 진동할 수 있음. 낮은 값부터 올릴 것.
-DEFAULT_KP = 500.0
+DEFAULT_KP = 300.0
 #   Kd: 속도 오차에 대한 감쇠(댐퍼) — DM4310 범위 0~5. 진동이 보이면 올릴 것.
-DEFAULT_KD = 5.0
+DEFAULT_KD = 3.0
 #   tau_ff: 피드포워드 토크(N·m). 중력보상 등에 쓰는 값이라 이 테스트에선 0 고정.
 DEFAULT_TAU_FF = 0.0
 
@@ -115,6 +115,34 @@ def read_state(ctrl: MotorControl, motor: Motor):
     return motor.getPosition(), motor.getVelocity(), motor.getTorque()
 
 
+# 공식 프로토콜 기준 피드백 프레임 ERR 코드. motor/DM_CAN.py 가 이걸 파싱해서
+# Motor.getError() 로 꺼낼 수 있게 해둔 뒤로 여기서 사람이 읽을 이름으로 변환.
+_FAULT_NAMES = {
+    0x0: "정상",
+    0x8: "과전압",
+    0x9: "저전압",
+    0xA: "과전류",
+    0xB: "MOS 과열",
+    0xC: "코일 과열",
+    0xD: "통신 끊김",
+    0xE: "과부하",
+}
+
+
+def fault_name(code: int) -> str:
+    return _FAULT_NAMES.get(code, f"알수없음(0x{code:X})")
+
+
+def print_fault_if_any(motor: Motor, label: str = ""):
+    """고장 코드가 0이 아니면 경고로 출력. 정상이면 아무것도 안 찍음."""
+    err = motor.getError()
+    if err:
+        prefix = f"[{label}] " if label else ""
+        print(f"  [WARN] {prefix}모터 고장 코드 감지: {fault_name(err)} (0x{err:X}) "
+              f"— 토크가 안 나가거나 이상 동작할 수 있음. disable 후 재enable, "
+              f"안 되면 전원 재인가(24V 재투입) 필요할 수 있음")
+
+
 def open_connection(device: str, baud: int):
     print("=" * 60)
     print("[연결] 시리얼 포트 열기")
@@ -151,7 +179,8 @@ def step2_ping(ctrl: MotorControl, motor: Motor):
     for i in range(PING_COUNT):
         pos, vel, tau = read_state(ctrl, motor)
         positions.append(pos)
-        print(f"  [{i + 1}/{PING_COUNT}] pos={fmt_rad(pos)}  vel={vel:+.4f}rad/s  tau={tau:+.4f}Nm")
+        print(f"  [{i + 1}/{PING_COUNT}] pos={fmt_rad(pos)}  vel={vel:+.4f}rad/s  tau={tau:+.4f}Nm "
+              f"err={fault_name(motor.getError())}")
         time.sleep(PING_INTERVAL)
 
     # 전부 정확히 0.0 이면 응답이 안 오고 있을 가능성 — 그래도 실제 0 rad 일 수
@@ -162,6 +191,7 @@ def step2_ping(ctrl: MotorControl, motor: Motor):
         print("        바뀌는지 다시 한번 확인해볼 것)")
     else:
         print("\n[OK] 값이 갱신되고 있음 — CAN 통신 응답 확인됨")
+    print_fault_if_any(motor, "신호 조회")
     print()
 
 
@@ -193,6 +223,7 @@ def step3_mit_test(ctrl: MotorControl, motor: Motor, delta: float, kp: float, kd
 
     ctrl.enable(motor)
     time.sleep(0.1)
+    print_fault_if_any(motor, "enable 직후")
 
     base_pos, _, _ = read_state(ctrl, motor)
     target_pos = base_pos + delta
@@ -202,6 +233,7 @@ def step3_mit_test(ctrl: MotorControl, motor: Motor, delta: float, kp: float, kd
     reached_pos, _, _ = read_state(ctrl, motor)
     error = reached_pos - target_pos
     print(f"  도달 위치: {fmt_rad(reached_pos)}  (목표 대비 오차 {fmt_rad(error)})")
+    print_fault_if_any(motor, "이동 후")
 
     time.sleep(hold)  # 목표 위치에서 잠깐 정지 유지
 
@@ -238,6 +270,7 @@ def step_goto(ctrl: MotorControl, motor: Motor, target: float, kp: float, kd: fl
 
     ctrl.enable(motor)
     time.sleep(0.1)
+    print_fault_if_any(motor, "enable 직후")
 
     start_pos, _, _ = read_state(ctrl, motor)
     print(f"\n  시작 위치: {fmt_rad(start_pos)} → 목표: {fmt_rad(target)} 로 이동")
@@ -246,6 +279,7 @@ def step_goto(ctrl: MotorControl, motor: Motor, target: float, kp: float, kd: fl
     reached_pos, _, _ = read_state(ctrl, motor)
     error = reached_pos - target
     print(f"  도달 위치: {fmt_rad(reached_pos)}  (목표 대비 오차 {fmt_rad(error)})")
+    print_fault_if_any(motor, "이동 후")
 
     print("\n  목표 위치를 계속 유지합니다 — 멈추려면 Ctrl+C...")
     while True:

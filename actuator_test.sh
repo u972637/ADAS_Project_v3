@@ -8,6 +8,7 @@
 # 5. 위치 이동       : 지정한 각도로 이동한 뒤 그 자리를 계속 유지 (Ctrl+C로 종료)
 # 6. 제로잉         : 토크 없이 손으로 0도 위치를 맞춘 뒤 영점 저장
 # 7. 게인 설정       : 4/5번에 쓸 Kp/Kd/이동각/유지시간을 이 실행 동안만 바꿈
+# 8. 카메라 테스트   : 모터/CAN과 무관하게 카메라만 열어 미리보기 (CAN ID 불필요)
 #
 # 포트(시리얼 장치 경로)는 이 스크립트에서 따로 설정하지 않는다 —
 # test/actuator_conn_test.py 가 motor/dm4310_tracker.py 의 DEVICENAME 상수를
@@ -68,6 +69,7 @@ print_menu() {
     echo " 5. 위치 이동 (특정 각도로 이동 후 유지)"
     echo " 6. 제로잉 (영점 설정)"
     echo " 7. 게인 설정 (Kp/Kd/이동각/유지시간, 이번 실행만 적용)"
+    echo " 8. 카메라 테스트 (CAN ID 불필요)"
     echo " 0. 종료"
     echo "======================================"
 }
@@ -145,12 +147,21 @@ while true; do
             [[ -n "$input_hold" ]] && HOLD="$input_hold"
             echo "[OK] 게인 = Kp=$KP Kd=$KD / 이동각=${DELTA_DEG}° / 유지=${HOLD}s (이번 실행에만 적용)"
             ;;
+        8)
+            # CAN/모터와 무관 — 카메라 인덱스를 몰라도 --index 로 바꿔가며 시도 가능
+            read -rp "카메라 인덱스 입력 [기본: 4, Enter만 누르면 4]: " input_cam_idx
+            if [[ -n "$input_cam_idx" ]]; then
+                uv run python test/camera_test.py --index "$input_cam_idx"
+            else
+                uv run python test/camera_test.py
+            fi
+            ;;
         0)
             echo "종료합니다."
             break
             ;;
         *)
-            echo "[!] 0~7 중에서 선택하세요."
+            echo "[!] 0~8 중에서 선택하세요."
             ;;
     esac
 done
