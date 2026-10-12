@@ -11,17 +11,17 @@
 # 8. 카메라 테스트   : 모터/CAN과 무관하게 카메라만 열어 미리보기 (CAN ID 불필요)
 #
 # 포트(시리얼 장치 경로)는 이 스크립트에서 따로 설정하지 않는다 —
-# test/actuator_conn_test.py 가 motor/dm4310_tracker.py 의 DEVICENAME 상수를
+# tools/actuator_conn_test.py 가 motor/dm4310_tracker.py 의 DEVICENAME 상수를
 # 그대로 기본값으로 쓰기 때문에, 실제 사용 중인 포트가 바뀌면
 # motor/dm4310_tracker.py 의 DEVICENAME 한 곳만 고치면 이 스크립트와
 # main.py 운영 코드 모두에 일괄 적용된다.
 #
 # 1번(또는 2번)으로 CAN ID 가 설정돼야만 3~6번을 실행할 수 있다.
 # 7번에서 바꾼 값은 이 스크립트를 실행하는 동안만 유지되는 임시값이다 —
-# test/actuator_conn_test.py 맨 위 DEFAULT_KP/DEFAULT_KD/... 상수 자체를
+# tools/actuator_conn_test.py 맨 위 DEFAULT_KP/DEFAULT_KD/... 상수 자체를
 # 바꾸는 게 아니므로, 다음에 스크립트를 새로 실행하면 다시 그 파일의
 # 기본값(8.0 / 0.6 / 0.1rad≈5.73° / 1.0)으로 돌아간다. "항상 이 값으로 시작하고
-# 싶다"면 test/actuator_conn_test.py 상단의 DEFAULT_* 상수를 직접 고칠 것.
+# 싶다"면 tools/actuator_conn_test.py 상단의 DEFAULT_* 상수를 직접 고칠 것.
 #
 # 사용법: ./actuator_test.sh
 
@@ -38,7 +38,7 @@ CAN_ID=""
 # (여기서 바꾸는 게 아니라 "지금 어떤 포트를 쓰고 있는지" 확인용).
 CURRENT_DEVICE="$(uv run python3 -c "from motor.dm4310_tracker import DEVICENAME; print(DEVICENAME)" 2>/dev/null || echo "(확인 불가)")"
 
-# 4번(위치 신호)에 쓸 게인/이동각/유지시간 — test/actuator_conn_test.py 의
+# 4번(위치 신호)에 쓸 게인/이동각/유지시간 — tools/actuator_conn_test.py 의
 # DEFAULT_KP/DEFAULT_KD/DEFAULT_DELTA_RAD(=60도)/DEFAULT_HOLD_SEC 와 같은
 # 기본값으로 시작한다. 7번 메뉴에서 바꾸면 이 변수만 바뀌고(세션 한정),
 # 파이썬 파일의 상수는 그대로다.
@@ -92,7 +92,7 @@ while true; do
             # 최종적으로 응답하는 ID를 파이썬 스크립트가 tmpfile에 적어주면
             # 그 값을 그대로 CAN_ID로 받아온다.
             tmpfile="$(mktemp)"
-            uv run python test/actuator_conn_test.py --step id --write-id-to "$tmpfile"
+            uv run python tools/actuator_conn_test.py --step id --write-id-to "$tmpfile"
             if [[ -s "$tmpfile" ]]; then
                 CAN_ID="$(cat "$tmpfile")"
                 echo
@@ -114,11 +114,11 @@ while true; do
             ;;
         3)
             require_ready || continue
-            uv run python test/actuator_conn_test.py --id "$CAN_ID" --step ping
+            uv run python tools/actuator_conn_test.py --id "$CAN_ID" --step ping
             ;;
         4)
             require_ready || continue
-            uv run python test/actuator_conn_test.py --id "$CAN_ID" --step mit \
+            uv run python tools/actuator_conn_test.py --id "$CAN_ID" --step mit \
                 --kp "$KP" --kd "$KD" --delta-deg "$DELTA_DEG" --hold "$HOLD"
             ;;
         5)
@@ -129,12 +129,12 @@ while true; do
                 continue
             fi
             echo "[안내] 목표 위치에 도달한 뒤 계속 유지합니다 — 멈추려면 Ctrl+C"
-            uv run python test/actuator_conn_test.py --id "$CAN_ID" --step goto \
+            uv run python tools/actuator_conn_test.py --id "$CAN_ID" --step goto \
                 --target-deg "$input_target" --kp "$KP" --kd "$KD" --hold "$HOLD"
             ;;
         6)
             require_ready || continue
-            uv run python test/actuator_conn_test.py --id "$CAN_ID" --step zero
+            uv run python tools/actuator_conn_test.py --id "$CAN_ID" --step zero
             ;;
         7)
             read -rp "Kp 입력 [현재: $KP]: " input_kp
@@ -151,9 +151,9 @@ while true; do
             # CAN/모터와 무관 — 카메라 인덱스를 몰라도 --index 로 바꿔가며 시도 가능
             read -rp "카메라 인덱스 입력 [기본: 4, Enter만 누르면 4]: " input_cam_idx
             if [[ -n "$input_cam_idx" ]]; then
-                uv run python test/camera_test.py --index "$input_cam_idx"
+                uv run python tools/camera_test.py --index "$input_cam_idx"
             else
-                uv run python test/camera_test.py
+                uv run python tools/camera_test.py
             fi
             ;;
         0)

@@ -14,8 +14,8 @@ Tracker.update(x, y) 를 한 번만 호출하면 내부 1000Hz 제어 스레드�
 해상도) 기준 — 좌측 상단이 (0,0), 우측 하단이 (FRAME_W,FRAME_H).
 
 실행:
-  uv run python test/motor_goto.py 1200 900   # 그 좌표로 이동 후 유지
-  uv run python test/motor_goto.py            # 대화형으로 좌표 입력
+  uv run python tools/motor_goto.py 1200 900   # 그 좌표로 이동 후 유지
+  uv run python tools/motor_goto.py            # 대화형으로 좌표 입력
 """
 
 import os

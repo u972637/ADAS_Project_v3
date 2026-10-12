@@ -7,7 +7,7 @@ from collections import defaultdict
 
 # Flask 앱 설정
 app = Flask(__name__)
-model = YOLO('yolov8n-pose.pt')
+model = YOLO('assets/models/yolov8n-pose.pt')
 
 # 라즈베리파이 IP 및 포트 설정
 PI_IP = '192.168.10.26'

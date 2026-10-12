@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DM-J4310-2EC 2축(Yaw-Pitch) CAN MIT모드 얼굴(코) 추적 - 모터 제어 모듈
+DM-J4310-2EC 2축(Yaw-Pitch) CAN MIT모드 대상 추적 모터 제어 모듈.
 
-legacy/face_tracker_xl430_06_14.py(Dynamixel, RS485 펄스, 200Hz)를
-Damiao DM-J4310-2EC(CAN, MIT모드, 1000Hz)로 이식한 버전.
-
-역할 분담은 기존과 동일
-  - 카메라/코 검출(좌표 계산)은 외부 코드(detection/ 패키지)가 담당
-  - 이 파일은 "코 좌표 (x, y) -> 모터 명령" 부분만 담당
-  - 사용법: tracker.update(nose_x, nose_y) 를 검출 루프(약 30Hz)에서 매 프레임 호출
+카메라/동물 검출은 외부 코드가 담당하고, 이 모듈은 대상의 화면 좌표를
+모터 명령으로 바꾼다. tracker.update(x, y)를 검출된 프레임마다 호출한다.
 
 클로즈드 루프 설계 (호스트 측 피드백)
   이전 버전은 호스트가 내부적으로 시뮬레이션한(quintic spline) 위치를 기준으로
@@ -35,7 +30,7 @@ update() 동작 (검출 루프, ~30Hz)
 준비물
   - Damiao 전용 USB-CAN 동글, /dev/ttyUSBx 로 연결 (motor/DM_CAN.py 참고, 921600 baud)
   - 두 모터의 CAN ID가 Yaw=0x01, Pitch=0x02(MasterID 0x11/0x12)로 설정돼
-    있어야 함 — test/actuator_conn_test.py 의 "CAN ID 찾기/할당"(--step id)로
+    있어야 함 — tools/actuator_conn_test.py 의 "CAN ID 찾기/할당"(--step id)로
     Windows 전용 소프트웨어 없이 CAN 통신만으로 확인/변경 가능
   - MIT 모드는 __init__() 에서 매번 자동으로 전환(switchControlMode)하므로
     별도 사전 설정 불필요 (새 모터는 기본값이 MIT이지만, 혹시 다른 모드로
@@ -83,9 +78,9 @@ AXES = ("yaw", "pitch")
 # 2) 화면 / 추적 파라미터
 # ============================================================
 
-# 검출기(detection/)가 넘겨주는 좌표가 기준으로 삼는 해상도.
-# Arducam B0538C 실제 캡처 해상도(2592x1944)와 동일하게 맞춤 — 별도 트래커
-# 좌표계로 스케일하지 않고 카메라 픽셀 좌표를 그대로 받는다.
+# 검출기가 넘겨주는 좌표가 기준으로 삼는 해상도.
+# Arducam B0538C 목표 캡처 해상도(2592x1944)와 동일하다. 다른 해상도로
+# 검출한 경우 호출자가 이 좌표계로 스케일해야 한다.
 FRAME_W, FRAME_H   = 2592, 1944
 CENTER_X, CENTER_Y = FRAME_W // 2, FRAME_H // 2
 
@@ -97,7 +92,7 @@ CENTER_X, CENTER_Y = FRAME_W // 2, FRAME_H // 2
 #   초점거리 EFL = 3.6mm, F수 = F2.8, 픽셀 피치 = 2.2µm (센서: OG05B1B)
 #
 # 레티리니어 렌즈는 광축에서 x만큼 떨어진 점의 각도가 atan(x/f) 이고,
-# 우리 제어 목표 자체가 "코를 화면 중앙 근처로 유지"하는 것이라 x가 작을 때
+# 제어 목표가 대상을 화면 중앙 근처로 유지하는 것이라 x가 작을 때
 # atan(x/f) ≈ x/f 로 선형 근사가 잘 맞는다. 화면 전체 화각(FOV)이 스펙으로
 # 주어졌으므로, 화면 전체에 각도가 픽셀에 선형 비례한다고 가정하면:
 #
@@ -108,17 +103,16 @@ CENTER_X, CENTER_Y = FRAME_W // 2, FRAME_H // 2
 #   pixel_pitch(0.0022mm) / EFL(3.6mm) ≈ 0.000611 rad/px
 #   → 아래 두 값과 10~20% 이내로 일치해 FOV 기반 근사가 타당함을 확인.
 #   (완전히 같지 않은 건 렌즈 왜곡·FOV 정의 차이 때문 — 실제 튜닝 시 미세조정 필요)
-HFOV_DEG = 82.0
-VFOV_DEG = 66.0
+HFOV_DEG = 30.0 #31
+VFOV_DEG = 25.0 #25
 
 RAD_PER_PIXEL_X = math.radians(HFOV_DEG) / FRAME_W   # ≈ 0.000552 rad/px, err_x → Yaw
 RAD_PER_PIXEL_Y = math.radians(VFOV_DEG) / FRAME_H   # ≈ 0.000593 rad/px, err_y → Pitch
 
-# 실측 확인된 하드웨어 동작: yaw/pitch 모두 "+각도 명령 → 추적 대상의 픽셀
-# 좌표가 (0,0)(좌상단) 쪽으로 가까워짐"(yaw+ → 좌측, pitch+ → 위쪽).
-# 즉 대상 픽셀이 CENTER 보다 작은 쪽(= err 가 양수)에 있을 때는 그쪽으로
-# "더" 보내면 안 되고(이미 0쪽에 가까운데 더 밀면 더 벗어남), 반대 부호로
-# 보정해야 중앙으로 수렴한다 → 두 축 모두 SIGN = -1.
+# 이론상 유도(위 주석 참고)로는 SIGN = -1이 수렴 방향이지만, 실기로
+# 두 축을 번갈아 테스트한 결과 SIGN = +1일 때 실제로 대상을 따라가며
+# 중앙으로 수렴함을 확인했다(err 정의·좌표계 구현의 다른 부호 요소와
+# 상쇄되는 것으로 추정). 실측으로 검증·확정된 값이므로 임의로 바꾸지 말 것.
 SIGN_YAW   = 1
 SIGN_PITCH = 1
 
@@ -132,22 +126,33 @@ PITCH_RANGE_RAD = 0.6
 _RANGE_RAD = {"yaw": YAW_RANGE_RAD, "pitch": PITCH_RANGE_RAD}
 
 # ============================================================
-# 3) MIT 모드 임피던스 게인
+# 3) MIT 모드 임피던스 게인 — Yaw/Pitch 축별로 분리
 # ============================================================
 #   torque = Kp*(q_des - q) + Kd*(dq_des - dq) + tau_ff
 #   낮은 값에서 시작해 진동 없이 잘 따라올 때까지 올릴 것 (DM4310 Kp 0~500, Kd 0~5)
 #   호스트 쪽 궤적 스무딩이 없어졌으므로, 부드러움은 전적으로 이 두 값이 담당한다.
+#   Yaw 는 수평으로 회전해 중력 영향이 없지만, Pitch 는 자세에 따라 자중
+#   토크가 걸리므로 게인과 tau_ff(피드포워드)를 축별로 따로 둔다 — Yaw 는
+#   항상 tau_ff=0, Pitch 만 TAU_FF_PITCH 로 중력보상 토크를 넣을 수 있다.
 
-KP     = 500.0
-KD     = 5.0
-TAU_FF = 0.0
+KP_YAW   = 55.0
+KD_YAW   = 3.0
+KP_PITCH = 55.0
+KD_PITCH = 3.2
+
+TAU_FF_YAW   = 0.0   # Yaw 는 피드포워드 보정 없음 (고정)
+TAU_FF_PITCH = 2.3   # Pitch 자중 보상 토크 — steady-state 오차 보정용, 필요시 이 값만 조정
+
+_KP     = {"yaw": KP_YAW,   "pitch": KP_PITCH}
+_KD     = {"yaw": KD_YAW,   "pitch": KD_PITCH}
+_TAU_FF = {"yaw": TAU_FF_YAW, "pitch": TAU_FF_PITCH}
 
 # go_center() 전용 중앙 복귀 램프 지속 시간(초) — 선형 보간
-GO_CENTER_DURATION = 1.5
+GO_CENTER_DURATION = 2.0
 
 # 궤적 스트리밍 스레드 목표 주파수(Hz). 실제 달성 주파수는 USB-CAN 동글의
 # 시리얼 처리량에 따라 달라짐 — get_actual_freq() 로 실측 가능.
-CONTROL_FREQ = 1000
+CONTROL_FREQ = 500
 
 
 def _clamp(v, lo, hi):
@@ -230,7 +235,8 @@ class Tracker:
                     tau = min((t_now - self._ramp['t0']) / self._ramp['T'], 1.0)
                     for axis in AXES:
                         start = self._ramp['start'][axis]
-                        self._target[axis] = start + (0.0 - start) * tau
+                        goal  = self._ramp['goal'][axis]
+                        self._target[axis] = start + (goal - start) * tau
                     if tau >= 1.0:
                         self._ramp = None
                 q_des = dict(self._target)
@@ -239,7 +245,7 @@ class Tracker:
                 goal = _clamp(q_des[axis], -_RANGE_RAD[axis], _RANGE_RAD[axis])
                 motor = self._motor[axis]
 
-                self._ctrl.controlMIT(motor, KP, KD, goal, 0.0, TAU_FF)
+                self._ctrl.controlMIT(motor, _KP[axis], _KD[axis], goal, 0.0, _TAU_FF[axis])
 
                 # controlMIT() 이 전송 직후 recv() 해서 갱신해 둔 실측값을 반영
                 with self._lock:
@@ -272,9 +278,9 @@ class Tracker:
     # 핵심 제어 루프: 검출 루프에서 매 프레임 호출
     # --------------------------------------------------------
 
-    def update(self, nose_x, nose_y):
+    def update(self, target_x, target_y):
         """
-        픽셀 좌표(30fps 검출 주기) → 목표 각도 스텝 계산 → target 갱신.
+        대상 픽셀 좌표(검출 프레임마다) → 목표 각도 스텝 계산 → target 갱신.
 
         target 은 항상 '모터가 실제로 보고한 현재 위치'(self._current)를
         기준으로 계산한다. 호스트가 시뮬레이션한 값이 아니라 실측값을 쓰므로
@@ -282,11 +288,11 @@ class Tracker:
         실제 모터 전송은 _control_thread(1000Hz) 가 담당하므로 이 함수는
         블로킹 없음.
         """
-        if nose_x is None or nose_y is None:
+        if target_x is None or target_y is None:
             return
 
-        err_x = CENTER_X - nose_x
-        err_y = CENTER_Y - nose_y
+        err_x = CENTER_X - target_x
+        err_y = CENTER_Y - target_y
 
         if abs(err_x) < DEADZONE_PX:
             err_x = 0
@@ -318,12 +324,21 @@ class Tracker:
         with self._lock:
             return self._current["yaw"][0]
 
-    def go_center(self):
-        """두 모터를 선형 램프로 중앙(0 rad)까지 천천히 복귀."""
+    def go_to(self, yaw_rad: float = 0.0, pitch_rad: float = 0.0,
+              duration: float = GO_CENTER_DURATION):
+        """두 모터를 선형 램프로 임의의 목표(rad)까지 천천히 이동."""
+        goal = {
+            "yaw":   _clamp(yaw_rad,   -YAW_RANGE_RAD,   YAW_RANGE_RAD),
+            "pitch": _clamp(pitch_rad, -PITCH_RANGE_RAD, PITCH_RANGE_RAD),
+        }
         t_now = time.time()
         with self._lock:
             start = {axis: self._current[axis][0] for axis in AXES}
-            self._ramp = {'t0': t_now, 'T': GO_CENTER_DURATION, 'start': start}
+            self._ramp = {'t0': t_now, 'T': duration, 'start': start, 'goal': goal}
+
+    def go_center(self):
+        """두 모터를 선형 램프로 중앙(0 rad)까지 천천히 복귀."""
+        self.go_to(yaw_rad=0.0, pitch_rad=0.0)
 
     def close(self):
         """종료 시 스레드 정지 후 모터 비활성화, 시리얼 포트 닫기."""
@@ -332,22 +347,3 @@ class Tracker:
         for axis in AXES:
             self._ctrl.disable(self._motor[axis])
         self._serial.close()
-
-
-# ============================================================
-# 사용 예시
-# ============================================================
-# def get_nose_from_your_detector():
-#     raise NotImplementedError("여기에 코 좌표 검출 코드를 연결하세요")
-
-if __name__ == "__main__":
-    tracker = Tracker()
-    try:
-        while True:
-            x, y = get_nose_from_your_detector()
-            tracker.update(x, y)
-            time.sleep(0.033)   # 약 30 Hz (검출 루프)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        tracker.close()
