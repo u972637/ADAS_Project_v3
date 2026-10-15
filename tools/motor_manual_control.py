@@ -207,9 +207,22 @@ class ManualController:
                 print(f"[WARN] {axis} 축 MIT 모드 전환 확인 불가 — 반응이 없을 수 있음")
             self.ctrl.enable(self.motor[axis])
 
+        # refresh_motor_status() 는 조회 프레임을 보내고 그 순간 도착해
+        # 있는 바이트만 즉시 읽는다(시리얼 timeout=0.001s) — 응답이 아직
+        # 안 와 있으면 Motor.__init__ 의 기본값(0.0)을 그대로 읽게 돼,
+        # 실제 위치가 0°가 아닌데도 target_deg 가 0°로 초기화되어 조그
+        # 시작하자마자 그쪽으로 튀는 버그가 있었다. 몇 번 재시도해서 실제
+        # 응답을 받을 때까지 기다린다.
         self.target_deg = {}
         for axis in AXES:
-            self.ctrl.refresh_motor_status(self.motor[axis])
+            for _ in range(20):
+                self.ctrl.refresh_motor_status(self.motor[axis])
+                if self.motor[axis].has_received_any():
+                    break
+                time.sleep(0.02)
+            else:
+                print(f"[WARN] {axis} 축 위치 응답을 못 받음 — 실제 위치가 아닌 "
+                      f"기본값(0°)으로 시작할 수 있음")
             self.target_deg[axis] = math.degrees(self.motor[axis].getPosition())
 
     def current_deg(self, axis: str) -> float:

@@ -44,6 +44,7 @@ class Motor:
         self._rx_count = 0
         self._rx_window_t0 = _time()
         self._rx_actual_freq = 0.0
+        self._rx_total = 0   # 누적 수신 횟수(윈도우 리셋과 무관) — "응답을 한 번이라도 받았는지" 용
         self._rx_lock = threading.Lock()
 
     def recv_data(self, q: float, dq: float, tau: float, err: int = 0):
@@ -53,6 +54,7 @@ class Motor:
         self.state_err = err
         with self._rx_lock:
             self._rx_count += 1
+            self._rx_total += 1
             now = _time()
             elapsed = now - self._rx_window_t0
             if elapsed >= 1.0:
@@ -64,6 +66,13 @@ class Motor:
         """이 모터로부터 실제로 유효한 피드백 프레임을 받은 실측 Hz(직전 ~1초 평균)."""
         with self._rx_lock:
             return self._rx_actual_freq
+
+    def has_received_any(self) -> bool:
+        """지금까지 이 모터로부터 유효한 피드백 프레임을 한 번이라도 받았는지.
+        get_rx_freq() 는 ~1초 윈도우가 차야 갱신되므로, 연결 직후처럼 그보다
+        짧은 시간 안에 "응답이 왔는지"만 확인하고 싶을 땐 이걸 쓴다."""
+        with self._rx_lock:
+            return self._rx_total > 0
 
     def getError(self):
         """
