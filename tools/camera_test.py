@@ -13,9 +13,9 @@ main.py와 같은 카메라 설정(해상도/FOURCC)을 쓰지만, YOLO(ultralyt
 --index 로 바꿔가며 시도해볼 것 (예: 0, 1, 2 ...).
 
 실행:
-  uv run python test/camera_test.py              # 기본 인덱스(4)로 시도
-  uv run python test/camera_test.py --index 0    # 다른 인덱스로 시도
-  uv run python test/camera_test.py --list       # 0~9번 인덱스를 순서대로 열어만 보고 결과 출력
+  uv run python tools/camera_test.py              # 기본 인덱스(4)로 시도
+  uv run python tools/camera_test.py --index 0    # 다른 인덱스로 시도
+  uv run python tools/camera_test.py --list       # 0~9번 인덱스를 순서대로 열어만 보고 결과 출력
 
 키: q 또는 ESC = 종료
 """

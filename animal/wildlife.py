@@ -9,8 +9,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from audio import AudioCatalog, DryRunPlayer, WavPlayer
-import settings
+from animal.audio import AudioCatalog, DryRunPlayer, WavPlayer
+from animal import settings
 
 logger = logging.getLogger(__name__)
 

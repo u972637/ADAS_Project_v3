@@ -205,6 +205,13 @@ class Tracker:
         self._actual_freq = 0.0
         self._freq_lock = threading.Lock()
 
+        # update() 가 실제로 호출되는 실측 Hz(= 카메라/검출 루프가 새 목표
+        # 좌표를 넘겨주는 빈도) — 제어 스레드 Hz와는 완전히 다른 수치다.
+        self._update_count = 0
+        self._update_window_t0 = time.time()
+        self._update_actual_freq = 0.0
+        self._update_freq_lock = threading.Lock()
+
         # 제어 스트리밍 스레드 시작
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._control_thread, daemon=True)
@@ -270,9 +277,37 @@ class Tracker:
                 next_t = time.time()
 
     def get_actual_freq(self) -> float:
-        """직전 1초(대략) 동안 실측된 제어 스트리밍 주파수(Hz)."""
+        """직전 1초(대략) 동안 실측된 제어 스레드 틱(= 제어주기) 주파수(Hz)."""
         with self._freq_lock:
             return self._actual_freq
+
+    def get_can_tx_freq(self) -> float:
+        """controlMIT() 가 실제로 CAN-USB 시리얼로 보낸(송신+recv) 실측
+        Hz — 축 2개가 각각 호출하므로 보통 get_actual_freq() 의 약 2배."""
+        return self._ctrl.get_tx_freq()
+
+    def get_rx_freq(self, axis: str) -> float:
+        """해당 축(yaw/pitch) 액추에이터로부터 실제로 유효한 피드백 프레임을
+        받은 실측 Hz. get_can_tx_freq() 보다 낮다면 그 차이가 패킷 손실률."""
+        return self._motor[axis].get_rx_freq()
+
+    def get_update_freq(self) -> float:
+        """update() 가 유효한 좌표(= None 아님)로 실제 호출되는 실측 Hz —
+        카메라/YOLO 검출 루프가 새 목표 좌표를 넘겨주는 빈도(카메라 자체
+        fps·YOLO 추론 시간에 좌우됨). target_x/y 가 None 인 호출(검출 실패)
+        은 세지 않는다 — "검출기가 실제로 타겟을 준 빈도"를 보려는 것이다."""
+        with self._update_freq_lock:
+            return self._update_actual_freq
+
+    def _mark_update(self):
+        with self._update_freq_lock:
+            self._update_count += 1
+            now = time.time()
+            elapsed = now - self._update_window_t0
+            if elapsed >= 1.0:
+                self._update_actual_freq = self._update_count / elapsed
+                self._update_count = 0
+                self._update_window_t0 = now
 
     # --------------------------------------------------------
     # 핵심 제어 루프: 검출 루프에서 매 프레임 호출
@@ -290,6 +325,7 @@ class Tracker:
         """
         if target_x is None or target_y is None:
             return
+        self._mark_update()
 
         err_x = CENTER_X - target_x
         err_y = CENTER_Y - target_y

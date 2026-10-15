@@ -2,7 +2,8 @@
 # Copyright (c) 2024 cmjang). Talks to Damiao's official USB-CAN dongle over
 # a serial link and implements the DM4310 MIT/POS_VEL/VEL control protocol.
 # Do not hand-edit — regenerate from upstream if it needs to change.
-from time import sleep
+from time import sleep, time as _time
+import threading
 import numpy as np
 from enum import IntEnum
 from struct import unpack
@@ -34,12 +35,35 @@ class Motor:
         self.isEnable = False
         self.NowControlMode = Control_Type.MIT
         self.temp_param_dict = {}
+        # 실제로 이 모터로부터 유효한 피드백 프레임이 파싱돼 들어온 횟수를
+        # 실측 Hz로 환산 — controlMIT() 은 매 사이클 recv() 를 호출하지만,
+        # 시리얼 타이밍상 그 사이클에 아직 응답이 안 와 있으면 recv_data() 가
+        # 호출되지 않고 이전 값이 그대로 남는다(= 조용한 패킷 지연/손실).
+        # 송신 Hz(controlMIT 호출 횟수)와 이 수신 Hz가 다르면 그 차이가
+        # 바로 손실률이다.
+        self._rx_count = 0
+        self._rx_window_t0 = _time()
+        self._rx_actual_freq = 0.0
+        self._rx_lock = threading.Lock()
 
     def recv_data(self, q: float, dq: float, tau: float, err: int = 0):
         self.state_q = q
         self.state_dq = dq
         self.state_tau = tau
         self.state_err = err
+        with self._rx_lock:
+            self._rx_count += 1
+            now = _time()
+            elapsed = now - self._rx_window_t0
+            if elapsed >= 1.0:
+                self._rx_actual_freq = self._rx_count / elapsed
+                self._rx_count = 0
+                self._rx_window_t0 = now
+
+    def get_rx_freq(self) -> float:
+        """이 모터로부터 실제로 유효한 피드백 프레임을 받은 실측 Hz(직전 ~1초 평균)."""
+        with self._rx_lock:
+            return self._rx_actual_freq
 
     def getError(self):
         """
@@ -105,6 +129,28 @@ class MotorControl:
             print("Serial port is open")
             serial_device.close()
         self.serial_.open()
+        # controlMIT() 가 실제로 시리얼에 프레임을 보낸(= 보내고 recv() 까지
+        # 끝낸) 실측 Hz. 모터가 여러 대면 이 카운트는 모든 모터의 controlMIT
+        # 호출을 합산한다 — 축 2개면 제어 스레드 1틱당 2회 증가.
+        self._tx_count = 0
+        self._tx_window_t0 = _time()
+        self._tx_actual_freq = 0.0
+        self._tx_lock = threading.Lock()
+
+    def get_tx_freq(self) -> float:
+        """controlMIT() 가 실제로 보낸(송신+recv) 실측 Hz(직전 ~1초 평균)."""
+        with self._tx_lock:
+            return self._tx_actual_freq
+
+    def _mark_tx(self):
+        with self._tx_lock:
+            self._tx_count += 1
+            now = _time()
+            elapsed = now - self._tx_window_t0
+            if elapsed >= 1.0:
+                self._tx_actual_freq = self._tx_count / elapsed
+                self._tx_count = 0
+                self._tx_window_t0 = now
 
     def controlMIT(self, DM_Motor, kp: float, kd: float, q: float, dq: float, tau: float):
         """
@@ -140,6 +186,7 @@ class MotorControl:
         data_buf[7] = tau_uint & 0xff
         self.__send_data(DM_Motor.SlaveID, data_buf)
         self.recv()  # receive the data from serial port
+        self._mark_tx()
 
     def control_delay(self, DM_Motor, kp: float, kd: float, q: float, dq: float, tau: float, delay: float):
         """

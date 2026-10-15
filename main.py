@@ -8,9 +8,9 @@ import time
 import cv2
 from ultralytics import YOLO
 
-from camera import CameraCapture, open_camera, read_camera_frame
-import settings
-from wildlife import (
+from animal.camera import CameraCapture, open_camera, read_camera_frame
+from animal import settings
+from animal.wildlife import (
     TrackerCameraController,
     WildlifeDeterrent,
     process_frame,

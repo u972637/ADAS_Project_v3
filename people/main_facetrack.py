@@ -57,18 +57,24 @@ enable_v4l2_convert_so_if_needed()
 os.environ.setdefault("QT_QPA_FONTDIR", "/usr/share/fonts/truetype/dejavu")
 warnings.filterwarnings("ignore", message="CUDA initialization:.*")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 이 파일은 people/ 폴더에 있지만, animal/(mp3_player.py 등)·detection/·motor/·
+# assets/ 는 전부 프로젝트 루트에 있다 — 루트를 sys.path 에 넣어야
+# "from animal.mp3_player import ...", "from detection.yolo_pose import ..."
+# 같은 바로 아래의 bare import 와 motor.dm4310_tracker 지연 import 가 둘 다 풀린다.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 import cv2
 import numpy as np
-from mp3_player import MP3LoopPlayer
+from animal.mp3_player import MP3LoopPlayer
 from detection.yolo_pose import YoloPoseDetector
 
 # ──────────────────────────────────────────────
 # 설정
 # ──────────────────────────────────────────────
 CAMERA_IDX   = 4                     # Arducam B0538C 카메라 인덱스 — 실측 확인됨 (/dev/video4)
-MODEL_PATH   = "assets/models/yolov8n-pose.pt"     # YOLO pose 모델
+MODEL_PATH   = os.path.join(PROJECT_ROOT, "assets", "models", "yolov8n-pose.pt")  # YOLO pose 모델
 CAMERA_FOURCC = "YUY2"               # B0538C(OG05B1B) 네이티브 출력 포맷 (UVC 표준, Bayer 아님)
 FRAME_W, FRAME_H = 2592, 1944        # B0538C 최대 해상도 @ 25fps (USB 3.0 기준)
 BAYER_TO_BGR = cv2.COLOR_BayerGB2BGR # (구) oCam GRBG raw → OpenCV BGR, B0538C는 사용 안 함
@@ -84,7 +90,7 @@ COLOR_CORRECTION = {
     "brightness_gain": 1.0,
 }
 
-AUDIO_DIR = os.path.join(BASE_DIR, "audio")
+AUDIO_DIR = os.path.join(PROJECT_ROOT, "audio")
 TRACK_START_MP3 = os.path.join(AUDIO_DIR, "track_start.mp3")
 SAMPLE_MP3      = os.path.join(AUDIO_DIR, "sample.mp3")
 ROUTE_EXIT_MP3  = os.path.join(AUDIO_DIR, "route_exit.mp3")
