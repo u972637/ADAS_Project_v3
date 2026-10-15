@@ -8,10 +8,26 @@
 | 야생동물 음향 퇴치 | `main.py` | 멧돼지·고라니 탐지 → bbox 중심으로 짐벌 조준 → 종에 맞는 WAV 재생 |
 | 얼굴 추적 | `people/main_facetrack.py` | 손 든 사람 확정 → 코 좌표로 짐벌 추적 → 상황별 안내 음성 |
 
-모터(`motor/`)와 테스트 도구(`tools/`, `start.sh`, `actuator_test.sh`)는 두 앱이 공유한다.
+모터(`motor/`)와 테스트 도구(`start.sh`가 메인, `tools/actuator_test.sh`는
+저수준 점검용)는 두 앱이 공유한다.
+
+## 빠른 시작
+
+**하드웨어가 제대로 동작하는지 가장 먼저 확인하는 방법은 `start.sh`다.**
+
+```bash
+uv sync          # 최초 1회
+./start.sh       # 카메라+모터 통합 테스트 메뉴
+```
+
+메뉴에서 1(동물 추적)이나 2(YOLO 코 좌표 추적)를 선택하면 카메라·YOLO·모터가
+전부 실제 운영 코드와 동일한 경로로 동작하는 걸 바로 볼 수 있다. `main.py`나
+`people/main_facetrack.py`를 직접 실행하기 전에 `start.sh`로 먼저 확인하는 걸
+추천한다. 자세한 메뉴 설명은 [테스트 도구](#테스트-도구) 참고.
 
 ## 목차
 
+- [빠른 시작](#빠른-시작)
 - [Setup](#setup)
 - [구성](#구성)
 - [야생동물 탐지 — `main.py`](#야생동물-탐지--mainpy)
@@ -33,7 +49,7 @@ uv sync
 | --- | --- |
 | 카메라 | Arducam B0538C(OG05B1B), 인덱스 **4** = `/dev/video4`. USB 3.0 연결 시 2592×1944@25fps(USB 2.0은 5fps로 급감) |
 | CAN 동글 | Damiao 전용 USB-CAN, 이 프로젝트 기준 `/dev/ttyACM0` (동글 칩셋에 따라 `/dev/ttyUSB0`일 수도 있음 — `ls /dev/ttyUSB* /dev/ttyACM*`로 재확인) |
-| CAN ID | Yaw=`0x01`, Pitch=`0x02` (MasterID `0x11`/`0x12`) — `./actuator_test.sh` 1번(스캔)으로 확인/변경 가능 |
+| CAN ID | Yaw=`0x01`, Pitch=`0x02` (MasterID `0x11`/`0x12`) — `./tools/actuator_test.sh` 1번(스캔)으로 확인/변경 가능 |
 | MIT 모드 | `Tracker` 초기화 시 자동 전환, 별도 사전 설정 불필요 |
 
 카메라 인덱스를 바꾸려면 야생동물 쪽은 `animal/settings.py`의 `CAMERA_INDEX`,
@@ -44,8 +60,7 @@ uv sync
 
 ```
 main.py                        야생동물 탐지+음향퇴치 실행 진입점
-start.sh                       모터+카메라 통합 테스트 메뉴 (4개 항목)
-actuator_test.sh               액추에이터 단독 점검 메뉴 (8개 항목)
+start.sh                       모터+카메라 통합 테스트 메뉴 (메인, 4개 항목)
 
 animal/                        main.py 가 쓰는 모듈 (main.py 자신만 빼고 전부 이 안에)
   settings.py                    모델·카메라·모터·음향 설정 상수
@@ -70,6 +85,7 @@ motor/                         공용 — 모터/CAN
   DM_CAN.py                      Damiao 저수준 CAN 드라이버 (벤더링)
 
 tools/                         공용 — 점검 도구
+  actuator_test.sh                액추에이터 단독 점검 메뉴 (저수준, 8개 항목)
   actuator_conn_test.py           액추에이터 1개 연결/신호조회/위치신호/제로잉
   camera_test.py                  카메라 단독 테스트
   motor_goto.py                   지정 좌표로 이동 후 유지 (독립 실행)
@@ -185,25 +201,13 @@ torque = Kp·(q_des − q) + Kd·(dq_des − dq) + tau_ff
 
 ## 테스트 도구
 
-### `./actuator_test.sh` — 액추에이터 단독 점검
+**`./start.sh`가 평소 쓰는 메인 테스트 진입점**이다 — 카메라+YOLO+모터를
+한 메뉴에서 실제 운영 코드(`main.py`/`people/main_facetrack.py`)와 동일한
+경로로 전부 확인할 수 있다. `tools/actuator_test.sh`는 그보다 아래 단계,
+모터를 CAN 버스에 처음 배선하거나 CAN ID/영점만 따로 만질 때 쓰는 저수준
+도구다.
 
-카메라·YOLO 없이 모터 1개씩 점검한다. 포트는 `motor/dm4310_tracker.py`의
-`DEVICENAME`을 그대로 쓰므로, 포트가 바뀌면 그 한 곳만 고치면 된다.
-
-| # | 메뉴 | 비고 |
-| --- | --- | --- |
-| 1 | CAN ID 찾기/할당 (스캔) | CAN ID 몰라도 됨 — 1~10 스캔, 모터 1대만 연결 |
-| 2 | CAN ID 설정 (직접 입력) | ID를 이미 알 때 |
-| 3 | 신호 조회 | 토크 없이 통신 생존만 확인 |
-| 4 | 위치 신호 (MIT 테스트) | 작게 왕복 |
-| 5 | 위치 이동 | 목표로 이동 후 유지(왕복 안 함), Ctrl+C로 종료 |
-| 6 | 제로잉 | 영점 설정 |
-| 7 | 게인 설정 | 이번 실행에만 적용(파일 상수는 안 바뀜) |
-| 8 | 카메라 테스트 | 모터/CAN 무관 |
-
-3~6번은 1·2번으로 CAN ID가 지정돼야 실행된다.
-
-### `./start.sh` — 모터+카메라 통합 테스트
+### `./start.sh` — 모터+카메라 통합 테스트 (메인)
 
 `tools/motor_manual_control.py`를 실행한다.
 
@@ -239,6 +243,27 @@ uv run python tools/camera_test.py             # 카메라만 미리보기
 uv run python tools/camera_test.py --list      # 카메라 인덱스 스캔
 uv run python tools/zero_actuator.py           # 영점 설정 (enable 안 함)
 ```
+
+### `./tools/actuator_test.sh` — 액추에이터 단독 점검 (저수준)
+
+카메라·YOLO 없이 모터 **1개씩** 점검한다. 새 모터를 처음 배선했을 때,
+CAN ID를 모르거나 바꿔야 할 때, 영점만 다시 잡고 싶을 때 쓴다 — 평소
+동작 확인은 위 `start.sh`로 충분하다. 프로젝트 루트에서
+`./tools/actuator_test.sh`로 실행한다(포트는 `motor/dm4310_tracker.py`의
+`DEVICENAME`을 그대로 쓰므로, 포트가 바뀌면 그 한 곳만 고치면 된다).
+
+| # | 메뉴 | 비고 |
+| --- | --- | --- |
+| 1 | CAN ID 찾기/할당 (스캔) | CAN ID 몰라도 됨 — 1~10 스캔, 모터 1대만 연결 |
+| 2 | CAN ID 설정 (직접 입력) | ID를 이미 알 때 |
+| 3 | 신호 조회 | 토크 없이 통신 생존만 확인 |
+| 4 | 위치 신호 (MIT 테스트) | 작게 왕복 |
+| 5 | 위치 이동 | 목표로 이동 후 유지(왕복 안 함), Ctrl+C로 종료 |
+| 6 | 제로잉 | 영점 설정 |
+| 7 | 게인 설정 | 이번 실행에만 적용(파일 상수는 안 바뀜) |
+| 8 | 카메라 테스트 | 모터/CAN 무관 |
+
+3~6번은 1·2번으로 CAN ID가 지정돼야 실행된다.
 
 ## 음향 테스트 데이터 — `audio_test/`
 

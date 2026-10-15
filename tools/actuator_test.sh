@@ -23,14 +23,17 @@
 # 기본값(8.0 / 0.6 / 0.1rad≈5.73° / 1.0)으로 돌아간다. "항상 이 값으로 시작하고
 # 싶다"면 tools/actuator_conn_test.py 상단의 DEFAULT_* 상수를 직접 고칠 것.
 #
-# 사용법: ./actuator_test.sh
+# 사용법: ./tools/actuator_test.sh (프로젝트 루트에서 실행)
 
 # -e(실패 즉시 종료)는 안 쓴다 — 동글 미연결/잘못된 CAN ID 등으로 파이썬
 # 호출이 실패해도(exit code 1) 그 선택 하나만 실패 처리하고 메뉴로 돌아와야
 # 하는 대화형 루프라서, -e 를 쓰면 그런 흔한 실패 한 번에 스크립트 전체가
 # 꺼져버린다.
 set -uo pipefail
-cd "$(dirname "$0")"
+# 이 스크립트는 tools/ 안에 있지만, 아래 모든 python 호출(tools/*.py)과
+# motor.dm4310_tracker import 는 프로젝트 루트가 cwd 여야 경로가 풀린다 —
+# 스크립트 자신의 위치(tools/)가 아니라 그 부모(프로젝트 루트)로 이동한다.
+cd "$(dirname "$0")/.."
 
 CAN_ID=""
 
