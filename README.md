@@ -39,9 +39,22 @@ uv sync          # 최초 1회
 
 ## Setup
 
+**다른 PC에 새로 설치할 때**: `uv`만 설치돼 있으면 된다(파이썬 3.10 자체도
+`uv`가 `requires-python`(`pyproject.toml`)에 맞춰 알아서 받아 쓰므로, 시스템에
+파이썬 3.10을 미리 깔아둘 필요 없음).
+
 ```bash
+# uv 설치 (최초 1회, 이미 있으면 생략)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 의존성 설치 — pyproject.toml/uv.lock 에 고정된 버전 그대로 재현됨
 uv sync
 ```
+
+`uv sync`로 안 잡히는 **OS 레벨 의존성**은 다음 하나뿐: 야생동물 쪽
+`animal/audio.py`의 WAV 재생이 쓰는 `aplay`(Linux, alsa-utils) —
+대부분의 Linux 배포판에 기본 설치돼 있다. (MP3 안내 음성은 `pygame`이
+의존성에 포함돼 있어 별도 설치 없이 재생된다.)
 
 하드웨어 준비 체크리스트:
 

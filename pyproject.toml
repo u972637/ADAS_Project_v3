@@ -7,6 +7,7 @@ dependencies = [
     "flask>=3.0",
     "numpy==1.26.4",
     "opencv-python==4.10.0.84",
+    "pygame>=2.5",
     "pyserial>=3.5",
     "ultralytics==8.4.72",
 ]
