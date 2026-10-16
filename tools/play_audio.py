@@ -24,12 +24,15 @@ def main() -> None:
         raise ValueError(f"No audio mapping for class ID {CLASS_ID}")
 
     service = WildlifeDeterrent.from_settings()
+    # id=[1]: EscapeTracker가 track_id 없는 탐지는 새 타겟으로 lock하지
+    # 않으므로, model.track(persist=True)가 매긴 ID를 흉내낸 값을 넣는다.
     result = SimpleNamespace(
         orig_shape=(720, 1280),
         boxes=SimpleNamespace(
             xyxy=[[100, 100, 300, 300]],
             conf=[0.9],
             cls=[CLASS_ID],
+            id=[1],
         ),
     )
 

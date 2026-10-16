@@ -72,7 +72,9 @@ if TEST_DIR not in sys.path:
     sys.path.insert(0, TEST_DIR)
 
 import cv2
+import numpy as np
 import serial
+from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 
 from motor.DM_CAN import Motor, MotorControl, Control_Type
@@ -152,6 +154,46 @@ DISPLAY_SCALE = 0.30
 
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
+
+
+# cv2.putText()는 한글(등 비-라틴 문자)을 못 그려서 "???"로 깨진다 — 나눔고딕
+# 같은 한글 폰트로 PIL이 직접 그린 걸 다시 cv2 프레임에 합성한다.
+_KOREAN_FONT_CANDIDATES = (
+    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+)
+_korean_font_cache: dict[int, ImageFont.FreeTypeFont | None] = {}
+
+
+def _korean_font(size: int) -> ImageFont.FreeTypeFont | None:
+    if size not in _korean_font_cache:
+        font = None
+        for path in _KOREAN_FONT_CANDIDATES:
+            if os.path.isfile(path):
+                font = ImageFont.truetype(path, size)
+                break
+        if font is None:
+            print(f"[WARN] 한글 폰트를 못 찾음({_KOREAN_FONT_CANDIDATES}) "
+                  f"— 한글 오버레이가 깨질 수 있음")
+        _korean_font_cache[size] = font
+    return _korean_font_cache[size]
+
+
+def put_text_kr(frame_bgr, text: str, org: tuple[int, int],
+                 font_size: int = 20, color_bgr: tuple[int, int, int] = (255, 255, 255)):
+    """cv2 BGR 프레임 위에 한글이 섞인 텍스트를 PIL로 그려 합성한다.
+    폰트를 못 찾으면(이 머신에 나눔고딕이 없으면) cv2.putText로 폴백한다
+    (한글은 깨지지만 최소한 영문/숫자는 보이게)."""
+    font = _korean_font(font_size)
+    if font is None:
+        cv2.putText(frame_bgr, text, org, cv2.FONT_HERSHEY_SIMPLEX,
+                    font_size / 30.0, color_bgr, 2)
+        return frame_bgr
+    image = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+    drawer = ImageDraw.Draw(image)
+    # PIL은 RGB, cv2는 BGR이라 순서를 뒤집어 넘긴다.
+    drawer.text(org, text, font=font, fill=(color_bgr[2], color_bgr[1], color_bgr[0]))
+    return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
 
 def _bow_tracker(tracker: Tracker, duration: float = BOW_DURATION):
@@ -395,7 +437,8 @@ def run_wildlife_track():
 
     service = WildlifeDeterrent.from_settings()
     try:
-        validate_model_classes(model.names, service.class_map, service.expected_names)
+        validate_model_classes(model.names, service.class_map, service.expected_names,
+                                torso_class_id=service.torso_class_id)
     except ValueError as e:
         print(f"[ERROR] 모델 클래스 불일치 — {e} — 메뉴로 복귀합니다.")
         return
@@ -432,15 +475,52 @@ def run_wildlife_track():
             if event.audio_file is not None:
                 print(f"[AUDIO] {event.reason}: {event.audio_file}")
 
+            # 탐지가 TRACK_LOST_SECONDS(2초) 넘게 끊겨서 EscapeTracker 가
+            # lock을 놓친 경우(= 진짜 도주가 아니라 AI 탐지 누락) — r을 누른
+            # 것처럼 타겟 모드를 자동으로 끈다. 도주 조건(면적감소/급속이동)
+            # 으로 풀린 경우는 EscapeTracker 가 알아서 새 타겟을 재선정하므로
+            # 여기서 타겟 모드를 건드리지 않는다.
+            if event.reason == "tracking_lost" and target_mode:
+                target_mode = False
+                service.camera = None
+                print("\n[타겟 모드 자동 해제] 2초 이상 탐지 누락 — r 입력과 동일 효과. "
+                      "w로 다시 시작하세요.")
+
             disp = cv2.resize(frame, (disp_w, disp_h))
             label = "No target"
             if event.target is not None:
                 x1, y1, x2, y2 = (int(v * DISPLAY_SCALE) for v in event.target.xyxy)
                 box_color = (0, 255, 0) if target_mode else (0, 255, 255)   # 확정전=노랑, 확정(타겟모드)=초록
                 cv2.rectangle(disp, (x1, y1), (x2, y2), box_color, 2)
-                label = f"{event.label or 'Unknown'} {event.target.confidence:.2f}"
+                label = (f"{event.label or 'Unknown'} {event.target.confidence:.2f} "
+                         f"ID:{event.target.track_id}")
             cv2.putText(disp, f"{label} | {event.reason}", (10, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+            # 토르소(몸통) 박스 + 실제 조준점(점) 표시 — 모터는 토르소가
+            # 매칭된 동안은 이 점(토르소 중심)을 조준하고, 못 찾은 프레임에는
+            # 동물 bbox 중심으로 폴백한다(animal/wildlife.py 의 aim_target 과
+            # 동일한 우선순위).
+            step = service.last_escape_step
+            if step is not None and event.target is not None:
+                aim_point = None
+                if step.matched_torso is not None:
+                    tx1, ty1, tx2, ty2 = (int(v * DISPLAY_SCALE) for v in step.matched_torso.xyxy)
+                    cv2.rectangle(disp, (tx1, ty1), (tx2, ty2), (255, 255, 0), 2)  # 토르소=청록(cyan)
+                    aim_point = (int(step.matched_torso.center[0] * DISPLAY_SCALE),
+                                 int(step.matched_torso.center[1] * DISPLAY_SCALE))
+                else:
+                    aim_point = (int(event.target.center[0] * DISPLAY_SCALE),
+                                 int(event.target.center[1] * DISPLAY_SCALE))
+                cv2.circle(disp, aim_point, 6, (0, 0, 255), -1)  # 실제 조준점=빨간 점
+
+            # EscapeTracker 상태(타겟 lock/기준면적 수집/도주 판정 등) 표시 —
+            # "타겟 모드(w)"와는 별개로, 모터에 넘어갈 좌표 자체가 이 로직을
+            # 거쳤는지 직접 확인하려는 용도. 상태 문자열이 한글이라
+            # cv2.putText가 아니라 put_text_kr(PIL)로 그린다.
+            if service.last_escape_step is not None:
+                disp = put_text_kr(disp, f"[Escape] {service.last_escape_step.state}",
+                                    (10, 58), font_size=20, color_bgr=(0, 200, 255))
 
             mode_text = "TARGET MODE (tracking)" if target_mode else "WAITING (press w to start tracking)"
             mode_color = (0, 255, 0) if target_mode else (0, 255, 255)

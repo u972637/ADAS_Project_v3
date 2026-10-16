@@ -112,8 +112,8 @@ audio_test/                    스피커 음향 측정 데이터 시트 (CSV)
 ## 야생동물 탐지 — `main.py`
 
 ```text
-카메라 → 동물 YOLO → 대상 선택 ┬→ DM4310 카메라 조준 (ENABLE_MOTOR)
-                              └→ YOLO 클래스 → 재생 정책 → 무작위 WAV
+카메라 → model.track(ByteTrack) → EscapeTracker(타겟 ID 고정) ┬→ torso 중심 → DM4310 조준 (ENABLE_MOTOR)
+                                                           └→ YOLO 클래스 → 재생 정책 → 무작위 WAV
 ```
 
 기본 가중치는 `assets/models/weights.pt`. 모델을 바꾸려면 `animal/settings.py`의
@@ -125,7 +125,29 @@ audio_test/                    스피커 음향 측정 데이터 시트 (CSV)
 | --- | --- | --- |
 | 0 | `boar` | `boar` (멧돼지) |
 | 1 | `deer` | `water_deer` (고라니) |
-| 2 | `torso` | 조준·재생 대상 제외 |
+| 2 | `torso` | 재생 대상 아님 — 조준 기준점으로만 씀(아래 참고) |
+
+### 타겟 고정 추적 (`EscapeTracker`)
+
+매 프레임 신뢰도 최고 탐지를 그때그때 쫓는 대신, `model.track()`(ByteTrack)으로
+**개체별 ID를 유지**하면서 한 마리를 lock해 계속 쫓는다(새 탐지 중 bbox가 가장
+큰 개체를 고름). 모터는 그 개체의 **bbox 전체가 아니라 torso(몸통) 중심**을
+조준한다(다리·꼬리처럼 멀리 뻗은 부위 때문에 흔들리는 걸 피함).
+
+다음 중 하나라도 걸리면 "도주"로 보고 lock을 풀고(= 더 이상 조준 안 함),
+`RESELECT_GRACE_SECONDS`(1초) 뒤 새 타겟을 다시 고른다:
+- bbox 면적이 기준치의 `AREA_RATIO_THRESHOLD`(50%) 이하로 `AREA_HOLD_SECONDS`
+  (1초) 이상 유지(= 뒤로 물러남)
+- torso 중심의 5프레임 이동 속도가 `TORSO_SPEED_THRESHOLD`(0.15, bbox
+  너비로 정규화) 이상(= 급속 이동)
+
+**AI 탐지가 몇 프레임 누락되는 건 도주가 아니다** — lock된 타겟이
+`TRACK_LOST_SECONDS`(2초) 안에만 다시 보이면 그대로 추적을 이어간다. 그 안엔
+모터에 새 좌표를 안 보내므로(`Tracker`가 마지막 목표 각도를 계속 토크로
+유지) 제자리에서 안정적으로 버티고, 2초를 넘기면 그때 진짜로 lock을 푼다.
+관련 상수는 전부 `animal/settings.py`에 있다. (원본 로직 출처:
+`animal/animal_escape_tracking_combined.py`, 오프라인 영상 분석용으로 먼저
+작성됐던 걸 라이브 카메라 파이프라인에 맞게 옮김.)
 
 ```bash
 uv run main.py
@@ -141,8 +163,8 @@ uv run main.py
 실행 중 키: `q`=종료, `e`=모터 중앙 복귀.
 
 재생 규칙: 3프레임 연속 탐지 시 탐지 사건당 1회, 클래스 공통 쿨다운 10초.
-대상은 프레임마다 허용 클래스 중 신뢰도 최고 1개(여러 동물 간 ID 유지 추적은
-아직 없음). 음원 출처는 [매니페스트](assets/audio/manifest.json) 참고.
+대상은 위 `EscapeTracker`가 lock한 개체 하나(여러 동물이 있어도 ID로 하나만
+계속 따라감). 음원 출처는 [매니페스트](assets/audio/manifest.json) 참고.
 
 모델·카메라 없이 음성만 확인:
 
@@ -240,9 +262,15 @@ torque = Kp·(q_des − q) + Kd·(dq_des − dq) + tau_ff
   다시 연다. 3·4번은 그 연결을 그대로 쓴다.
 
 **1번 상세**: `main.py`와 동일한 `animal/wildlife.py`/`camera.py`/`settings.py`를
-재사용. 탐지(노란 박스)는 시작하자마자 바로 되지만, `w`를 눌러야 실제 조준이
-시작된다(`main.py` 자체는 이 게이팅 없이 탐지 즉시 조준+재생함 — 테스트
-메뉴에서만 시작 시점을 수동으로 통제). WAV 재생은 `w`와 무관하게 탐지 즉시 동작.
+재사용(`EscapeTracker` 포함). 탐지(노란 박스)는 시작하자마자 바로 되지만,
+`w`를 눌러야 실제 조준이 시작된다(`main.py` 자체는 이 게이팅 없이 탐지
+즉시 조준+재생함 — 테스트 메뉴에서만 시작 시점을 수동으로 통제). WAV
+재생은 `w`와 무관하게 탐지 즉시 동작. 타겟이 lock되면 박스가 초록으로
+바뀌고, torso 박스(청록)와 실제 조준점(빨간 점)이 같이 표시되며, 화면에
+`[Escape] <상태>`로 지금 기준 면적을 모으는 중인지/추적 중인지/도주로
+풀렸는지가 바로 보인다. 탐지가 2초 넘게 끊기면(`TRACK_LOST_SECONDS`)
+`r`을 누른 것처럼 자동으로 타겟 모드가 풀린다(도주 조건으로 풀린 경우는
+자동 재선정되므로 타겟 모드는 유지).
 
 **2번 상세**: `people/main_facetrack.py`와 같은 `YoloPoseDetector`. 대상 몸
 박스와 코 좌표를 항상 표시하고, 손을 `ARM_UP_THRESHOLD`(2초) 이상 들어야

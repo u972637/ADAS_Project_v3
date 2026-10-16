@@ -5,8 +5,10 @@ description = "Wildlife YOLO detection, DM4310 camera tracking, and class-based 
 requires-python = ">=3.10,<3.11"
 dependencies = [
     "flask>=3.0",
+    "lap>=0.5.12",
     "numpy==1.26.4",
     "opencv-python==4.10.0.84",
+    "pillow>=10.0",
     "pygame>=2.5",
     "pyserial>=3.5",
     "ultralytics==8.4.72",

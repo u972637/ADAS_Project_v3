@@ -103,8 +103,8 @@ CENTER_X, CENTER_Y = FRAME_W // 2, FRAME_H // 2
 #   pixel_pitch(0.0022mm) / EFL(3.6mm) ≈ 0.000611 rad/px
 #   → 아래 두 값과 10~20% 이내로 일치해 FOV 기반 근사가 타당함을 확인.
 #   (완전히 같지 않은 건 렌즈 왜곡·FOV 정의 차이 때문 — 실제 튜닝 시 미세조정 필요)
-HFOV_DEG = 30.0 #31
-VFOV_DEG = 25.0 #25
+HFOV_DEG = 28.0 #30  25
+VFOV_DEG = 20.0 #25 16
 
 RAD_PER_PIXEL_X = math.radians(HFOV_DEG) / FRAME_W   # ≈ 0.000552 rad/px, err_x → Yaw
 RAD_PER_PIXEL_Y = math.radians(VFOV_DEG) / FRAME_H   # ≈ 0.000593 rad/px, err_y → Pitch
@@ -135,10 +135,10 @@ _RANGE_RAD = {"yaw": YAW_RANGE_RAD, "pitch": PITCH_RANGE_RAD}
 #   토크가 걸리므로 게인과 tau_ff(피드포워드)를 축별로 따로 둔다 — Yaw 는
 #   항상 tau_ff=0, Pitch 만 TAU_FF_PITCH 로 중력보상 토크를 넣을 수 있다.
 
-KP_YAW   = 55.0
-KD_YAW   = 3.0
-KP_PITCH = 55.0
-KD_PITCH = 3.2
+KP_YAW   = 30.0 #55
+KD_YAW   = 1.8 #3
+KP_PITCH = 30.0 #55
+KD_PITCH = 1.8 # 3.2
 
 TAU_FF_YAW   = 0.0   # Yaw 는 피드포워드 보정 없음 (고정)
 TAU_FF_PITCH = 2.3   # Pitch 자중 보상 토크 — steady-state 오차 보정용, 필요시 이 값만 조정

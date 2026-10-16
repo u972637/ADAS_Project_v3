@@ -30,7 +30,8 @@ def run() -> None:
     service = None
     try:
         service = WildlifeDeterrent.from_settings()
-        validate_model_classes(model.names, service.class_map, service.expected_names)
+        validate_model_classes(model.names, service.class_map, service.expected_names,
+                                torso_class_id=service.torso_class_id)
         for class_id in sorted(service.class_map):
             print(
                 f"[CLASS] model {class_id}={model.names[class_id]} "
