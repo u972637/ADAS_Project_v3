@@ -8,12 +8,13 @@ motor/dm4310_tracker.py 와 동일한 연결 정보·게인을 그대로 가져�
 
 메뉴:
   1. 동물 추적 + 종별 음향 재생 (main.py 와 동일한 wildlife.py 파이프라인)
-  2. YOLO 코 좌표 추적 (손들기 ARM_UP_THRESHOLD초로 추적 시작)
-  3. 방향키로 위치 제어 (모터 각도를 직접 조그)
-  4. 음향테스트용 위치 고정 (yaw=0°, pitch=0°로 이동 후 유지)
+  2. 사람을 동물로 간주해 추적 (1번과 같은 파이프라인, 모델만 YOLO pose)
+  3. YOLO 코 좌표 추적 (손들기 ARM_UP_THRESHOLD초로 추적 시작)
+  4. 방향키로 위치 제어 (모터 각도를 직접 조그)
+  5. 음향테스트용 위치 고정 (yaw=0°, pitch=0°로 이동 후 유지)
   0. 종료
 
-1·2·3·4번 모두 **q 또는 ESC로 정상 종료하면** 공통으로 "숙인위치"
+1~5번 모두 **q 또는 ESC로 정상 종료하면** 공통으로 "숙인위치"
 (BOW_YAW_DEG=0°, BOW_PITCH_DEG=-4°)로 BOW_DURATION(1초)에 걸쳐 복귀한 뒤
 메뉴로 돌아온다 (Ctrl+C 로 강제중지한 경우는 복귀 없이 바로 모터를 끈다).
 
@@ -24,7 +25,14 @@ wildlife.py/camera.py/settings.py 조합을 그대로 재사용해 멧돼지/고
 가지고 있어 종료 시 숙인위치로 보낼 수 없으므로, 이 함수가 Tracker 를
 직접 들고 재구현한다.
 
-2번에서 손들기로 추적이 확정되는 그 순간(락온)에 audio/track_start2.mp3 를
+2번 진입 시 동작 — 1번과 완전히 같은 루프·EscapeTracker(타겟 ID 고정,
+도주감지, torso 조준)·w/r 게이팅을 쓰되, 탐지 모델만 weights.pt 대신
+YOLO pose(yolov8n-pose.pt)로 바꿔 사람을 동물 한 종처럼 취급한다. 실제
+동물 없이 추적 알고리즘을 시험하는 용도. torso 는 어깨·골반 키포인트로
+만들고(animal/person_proxy.py), 사람이 잡히면 멧돼지 WAV를 재생한다
+(animal/settings.py 의 PERSON_* 설정).
+
+3번에서 손들기로 추적이 확정되는 그 순간(락온)에 audio/track_start2.mp3 를
 1회 재생해 추적 시작을 알린다. 화면에는 검출된 코 좌표를 항상 표시하지만, 실제로
 motor/dm4310_tracker.py 의 Tracker.update(x, y) 를 호출해 모터를 움직이는
 건 그 사람이 ARM_UP_THRESHOLD(2초) 이상 손을 들고 있어야 시작되고(=
@@ -32,7 +40,7 @@ motor/dm4310_tracker.py 의 Tracker.update(x, y) 를 호출해 모터를 움직�
 모드"(확정 상태)가 아니면 즉시 기본 자세(DEFAULT_YAW_DEG=0°,
 DEFAULT_PITCH_DEG=30°)로 1회 복귀한다.
 
-3번 진입 시 조작 — 모터 각도를 직접 명령:
+4번 진입 시 조작 — 모터 각도를 직접 명령:
   a : yaw   +STEP_DEG    d : yaw   -STEP_DEG
   w : pitch +STEP_DEG    s : pitch -STEP_DEG
   q : 메뉴로 복귀 (Ctrl+C 는 프로그램 전체 종료)
@@ -47,7 +55,7 @@ DEFAULT_PITCH_DEG=30°)로 1회 복귀한다.
   YAW_MIN_DEG   / YAW_MAX_DEG   = -175 / 175
   PITCH_MIN_DEG / PITCH_MAX_DEG =  -30 / 180
 
-4번 진입 시 동작 — 카메라/YOLO 없이 모터만 yaw=0°, pitch=0°(정면·수평)로
+5번 진입 시 동작 — 카메라/YOLO 없이 모터만 yaw=0°, pitch=0°(정면·수평)로
 이동시켜 그 자리에 고정한다. audio_test/ 의 각도·거리별 dB 측정을 할 때,
 스피커(짐벌) 조준은 항상 0°로 고정해두고 마이크를 각 각도·거리로 옮겨가며
 재는 용도다. q 또는 ESC 로 메뉴 복귀.
@@ -90,8 +98,9 @@ from motor.dm4310_tracker import (
 from camera_test import DEFAULT_CAMERA_IDX, open_camera as cam_open_camera, read_frame as cam_read_frame
 from detection.yolo_pose import YoloPoseDetector
 
-# main.py(야생동물 음향 퇴치)가 쓰는 것과 동일한 모듈 — 1번 메뉴가 재사용한다.
+# main.py(야생동물 음향 퇴치)가 쓰는 것과 동일한 모듈 — 1·2번 메뉴가 재사용한다.
 from animal import settings
+from animal.person_proxy import person_deterrent_from_settings, process_person_frame
 from animal.wildlife import (
     TrackerCameraController, WildlifeDeterrent, process_frame, validate_model_classes,
 )
@@ -135,7 +144,7 @@ BOW_PITCH_DEG = -4.0
 BOW_DURATION  = 1.0   # 초
 
 # ──────────────────────────────────────────────
-# 2번(YOLO 코 좌표 추적 테스트) 전용 설정
+# 3번(YOLO 코 좌표 추적 테스트) 전용 설정
 # ──────────────────────────────────────────────
 
 # people/main_facetrack.py 와 동일한 모델/기준값 — 파인튜닝 모델로 바꿀 땐
@@ -144,7 +153,7 @@ MODEL_PATH = os.path.join(PROJECT_ROOT, "assets", "models", "yolov8n-pose.pt")
 ARM_UP_THRESHOLD = 2.0    # 초 — 이만큼 손을 들고 있어야 추적 확정
 ARM_DOWN_GRACE = 10       # 프레임 — 이만큼 넘게 손을 내리면 추적 해제
 
-# 2번("인식모드") 진입 시 1회 재생할 안내음
+# 3번("인식모드") 진입 시 1회 재생할 안내음
 TRACK_START2_PATH = os.path.join(PROJECT_ROOT, "audio", "track_start2.mp3")
 
 # 2592x1944 그대로 창을 띄우면 화면보다 커서 축소 표시만 한다
@@ -304,7 +313,7 @@ class ManualController:
 
 
 # ──────────────────────────────────────────────
-# 메뉴 2: 방향키 제어
+# 메뉴 4: 방향키 제어
 # ──────────────────────────────────────────────
 
 def run_manual_jog(mc: ManualController):
@@ -356,7 +365,7 @@ def run_manual_jog(mc: ManualController):
 
 
 # ──────────────────────────────────────────────
-# 메뉴 4: 음향테스트용 위치 고정 (yaw=0°, pitch=0°)
+# 메뉴 5: 음향테스트용 위치 고정 (yaw=0°, pitch=0°)
 # ──────────────────────────────────────────────
 
 def run_audio_test_pose(mc: ManualController):
@@ -399,9 +408,10 @@ def run_audio_test_pose(mc: ManualController):
 
 # ──────────────────────────────────────────────
 # 메뉴 1: 동물 추적 + 종별 음향 재생
+# 메뉴 2: 사람을 동물로 간주해 추적 (person_proxy=True)
 # ──────────────────────────────────────────────
 
-def run_wildlife_track():
+def run_wildlife_track(person_proxy: bool = False):
     """
     main.py(야생동물 음향 퇴치)와 동일한 wildlife.py/camera.py/settings.py
     조합을 그대로 재사용해 멧돼지/고라니를 탐지한다. 탐지 자체(화면에 bbox
@@ -419,26 +429,41 @@ def run_wildlife_track():
     채로 main.py 의 run() 과 비슷한 루프를 재구현한다. q/ESC 로 정상
     종료하면 _bow_tracker() 로 숙인위치에 복귀한다.
 
-    2번(YOLO 코 추적)과 포트를 동시에 쓸 수 없으므로(같은 시리얼 장치),
+    person_proxy=True(2번)면 위 동작을 전부 그대로 두고 모델만 YOLO pose
+    (settings.PERSON_MODEL_PATH)로 바꿔 사람을 동물 한 종처럼 넣는다 —
+    torso 는 키포인트로 만들고(animal/person_proxy.py) WAV 는
+    settings.PERSON_CLASS_TO_AUDIO 에 맞춰 재생한다.
+
+    4번(수동 조그)과 포트를 동시에 쓸 수 없으므로(같은 시리얼 장치),
     이 함수 안에서 자체적으로 Tracker 를 새로 열고 끝나면 닫는다 — 호출하는
     쪽(main())이 먼저 ManualController 를 닫아둔 상태여야 한다.
     """
-    print("\n[동물 추적 테스트] 멧돼지/고라니 탐지는 바로 시작하지만,")
+    if person_proxy:
+        print("\n[사람 대역 추적 테스트] 사람을 동물처럼 탐지해 1번과 같은 추적 로직에 넣습니다.")
+    else:
+        print("\n[동물 추적 테스트] 멧돼지/고라니 탐지는 바로 시작하지만,")
     print("  w 를 눌러야 실제 조준(타겟 모드)이 시작됩니다 — q 또는 ESC 로 메뉴 복귀\n")
 
-    model_path = settings.MODEL_PATH
+    model_path = settings.PERSON_MODEL_PATH if person_proxy else settings.MODEL_PATH
     if not model_path.is_file():
-        print(f"[ERROR] 동물 탐지 모델이 없습니다: {model_path} — 메뉴로 복귀합니다.")
+        print(f"[ERROR] 탐지 모델이 없습니다: {model_path} — 메뉴로 복귀합니다.")
         return
 
-    print(f"[..] 동물 탐지 모델 로드 중... ({model_path})")
+    print(f"[..] 탐지 모델 로드 중... ({model_path})")
     model = YOLO(str(model_path))
     print("[OK] 모델 로드 완료")
 
-    service = WildlifeDeterrent.from_settings()
+    if person_proxy:
+        service = person_deterrent_from_settings()
+        step_frame = process_person_frame
+    else:
+        service = WildlifeDeterrent.from_settings()
+        step_frame = process_frame
     try:
+        # 사람 대역의 torso 는 모델 클래스가 아니라 키포인트로 만든 합성
+        # 클래스라 모델 이름표로 검증할 대상이 아니다.
         validate_model_classes(model.names, service.class_map, service.expected_names,
-                                torso_class_id=service.torso_class_id)
+                                torso_class_id=None if person_proxy else service.torso_class_id)
     except ValueError as e:
         print(f"[ERROR] 모델 클래스 불일치 — {e} — 메뉴로 복귀합니다.")
         return
@@ -459,7 +484,8 @@ def run_wildlife_track():
     print("[OK] 연결 완료 — w 를 눌러야 실제로 조준을 시작합니다.")
 
     disp_w, disp_h = int(FRAME_W * DISPLAY_SCALE), int(FRAME_H * DISPLAY_SCALE)
-    win_name = "Wildlife Tracking (w: start tracking, q/ESC: back)"
+    win_name = ("Person-as-Animal Tracking" if person_proxy else "Wildlife Tracking") \
+        + " (w: start tracking, q/ESC: back)"
     cv2.namedWindow(win_name)
     next_hz_print = time.time()   # 1초마다 파이프라인 전체 실측 Hz 콘솔 출력
     target_mode = False   # w 를 누르면 True 로 전환되고 이후 계속 유지됨
@@ -471,7 +497,7 @@ def run_wildlife_track():
                 time.sleep(0.01)
                 continue
 
-            event = process_frame(model, service, frame, time.monotonic())
+            event = step_frame(model, service, frame, time.monotonic())
             if event.audio_file is not None:
                 print(f"[AUDIO] {event.reason}: {event.audio_file}")
 
@@ -492,7 +518,11 @@ def run_wildlife_track():
                 x1, y1, x2, y2 = (int(v * DISPLAY_SCALE) for v in event.target.xyxy)
                 box_color = (0, 255, 0) if target_mode else (0, 255, 255)   # 확정전=노랑, 확정(타겟모드)=초록
                 cv2.rectangle(disp, (x1, y1), (x2, y2), box_color, 2)
-                label = (f"{event.label or 'Unknown'} {event.target.confidence:.2f} "
+                # 사람 대역은 event.label 이 음원 그룹(boar 등)이라 실제로
+                # 잡힌 게 사람임을 같이 보여준다.
+                shown = (f"person->{event.label}" if person_proxy
+                         else event.label or 'Unknown')
+                label = (f"{shown} {event.target.confidence:.2f} "
                          f"ID:{event.target.track_id}")
             cv2.putText(disp, f"{label} | {event.reason}", (10, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
@@ -572,7 +602,7 @@ def run_wildlife_track():
 
 
 # ──────────────────────────────────────────────
-# 메뉴 2: YOLO 코 좌표 추적 ("인식모드")
+# 메뉴 3: YOLO 코 좌표 추적 ("인식모드")
 # ──────────────────────────────────────────────
 
 def run_auto_track():
@@ -601,7 +631,7 @@ def run_auto_track():
     카메라는 people/main_facetrack.py 와 같은 설정(DEFAULT_CAMERA_IDX=4, 실측
     확인됨)으로 camera_test.py 의 open_camera()/read_frame() 을 재사용한다.
 
-    3번(수동 조그)과 포트를 동시에 쓸 수 없으므로(같은 시리얼 장치), 이
+    4번(수동 조그)과 포트를 동시에 쓸 수 없으므로(같은 시리얼 장치), 이
     함수 안에서 자체적으로 Tracker 를 새로 열고 끝나면 닫는다 — 호출하는
     쪽(main())이 먼저 ManualController 를 닫아둔 상태여야 한다.
     """
@@ -762,9 +792,10 @@ def print_menu():
     print(" Yaw/Pitch 수동 제어")
     print("======================================")
     print(" 1. 동물 추적 + 종별 음향 재생 (멧돼지/고라니 탐지)")
-    print(" 2. YOLO 코 좌표 추적 (손들기로 시작, 인식모드 진입 시 안내음)")
-    print(" 3. 방향키로 위치 제어 (모터 각도 직접 조그)")
-    print(" 4. 음향테스트용 위치 고정 (yaw=0°, pitch=0°)")
+    print(" 2. 사람을 동물로 간주해 추적 (1번 알고리즘 + YOLO 사람 모델)")
+    print(" 3. YOLO 코 좌표 추적 (손들기로 시작, 인식모드 진입 시 안내음)")
+    print(" 4. 방향키로 위치 제어 (모터 각도 직접 조그)")
+    print(" 5. 음향테스트용 위치 고정 (yaw=0°, pitch=0°)")
     print(" 0. 종료")
     print("======================================")
 
@@ -782,16 +813,16 @@ def main():
             except EOFError:
                 break
 
-            if choice == "1":
-                # 1·2번은 같은 시리얼 포트를 Tracker 로 새로 열어야 해서,
+            if choice in ("1", "2"):
+                # 1·2·3번은 같은 시리얼 포트를 Tracker 로 새로 열어야 해서,
                 # ManualController 가 들고 있던 연결을 잠깐 반납했다가
                 # 돌아오면 다시 연다.
                 mc.close()
-                run_wildlife_track()
+                run_wildlife_track(person_proxy=(choice == "2"))
                 print("[..] 모터 재연결 중...")
                 mc = ManualController()
                 print("[OK] 재연결 완료")
-            elif choice == "2":
+            elif choice == "3":
                 # 기본 자세로의 복귀는 따로 먼저 하지 않는다 — YOLO 모델
                 # 로드가 끝나고 추적 루프가 돌기 시작하면 (아직 타겟 모드가
                 # 아닌) 첫 프레임부터 run_auto_track() 내부의 "타겟 모드
@@ -801,15 +832,15 @@ def main():
                 print("[..] 모터 재연결 중...")
                 mc = ManualController()
                 print("[OK] 재연결 완료")
-            elif choice == "3":
-                run_manual_jog(mc)
             elif choice == "4":
+                run_manual_jog(mc)
+            elif choice == "5":
                 run_audio_test_pose(mc)
             elif choice == "0":
                 print("종료합니다.")
                 break
             else:
-                print("[!] 0, 1, 2, 3, 4 중에서 선택하세요.")
+                print("[!] 0, 1, 2, 3, 4, 5 중에서 선택하세요.")
     except KeyboardInterrupt:
         print("\n[중단]")
     finally:

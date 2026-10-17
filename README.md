@@ -20,7 +20,7 @@ uv sync          # 최초 1회
 ./start.sh       # 카메라+모터 통합 테스트 메뉴
 ```
 
-메뉴에서 1(동물 추적)이나 2(YOLO 코 좌표 추적)를 선택하면 카메라·YOLO·모터가
+메뉴에서 1(동물 추적)이나 3(YOLO 코 좌표 추적)을 선택하면 카메라·YOLO·모터가
 전부 실제 운영 코드와 동일한 경로로 동작하는 걸 바로 볼 수 있다. `main.py`나
 `people/main_facetrack.py`를 직접 실행하기 전에 `start.sh`로 먼저 확인하는 걸
 추천한다. 자세한 메뉴 설명은 [테스트 도구](#테스트-도구) 참고.
@@ -73,12 +73,13 @@ uv sync
 
 ```
 main.py                        야생동물 탐지+음향퇴치 실행 진입점
-start.sh                       모터+카메라 통합 테스트 메뉴 (메인, 4개 항목)
+start.sh                       모터+카메라 통합 테스트 메뉴 (메인, 5개 항목)
 
 animal/                        main.py 가 쓰는 모듈 (main.py 자신만 빼고 전부 이 안에)
   settings.py                    모델·카메라·모터·음향 설정 상수
   camera.py                      Arducam YUY2 캡처, 최신 프레임 전달, 재연결
   wildlife.py                    YOLO 결과·대상 선택·종 분류·재생 정책·모터 어댑터
+  person_proxy.py                사람을 동물처럼 넣는 어댑터 (start.sh 2번, 키포인트 torso)
   audio.py                       WAV 목록 검증·무작위 선택·재생
   mp3_player.py                  MP3 재생기 (pygame) — people/, tools/ 도 같이 씀
 assets/models/weights.pt       동물 탐지 YOLO 가중치
@@ -223,7 +224,7 @@ torque = Kp·(q_des − q) + Kd·(dq_des − dq) + tau_ff
 - **제어 스레드**: `Tracker` 인스턴스당 1개, 목표 `CONTROL_FREQ` Hz로 계속
   스트리밍. 실측 주파수는 `get_actual_freq()`, 그 외에도 카메라→목표좌표
   Hz(`get_update_freq()`), CAN 송신 Hz(`get_can_tx_freq()`), 축별 수신 Hz
-  (`get_rx_freq(axis)`)를 전부 실측할 수 있다 — `start.sh` 1·2번 화면에
+  (`get_rx_freq(axis)`)를 전부 실측할 수 있다 — `start.sh` 1·2·3번 화면에
   실시간으로 표시됨.
 - **`Tracker.update(x, y)`**: 픽셀 오차 × `RAD_PER_PIXEL_X/Y` → 각도 스텝 →
   실측 현재 위치에 더해서 다음 목표로 삼는다.
@@ -249,17 +250,18 @@ torque = Kp·(q_des − q) + Kd·(dq_des − dq) + tau_ff
 | # | 메뉴 | 키 |
 | --- | --- | --- |
 | 1 | 동물 추적 + 종별 음향 재생 | `w`=조준 시작(타겟모드), `r`=재추적, `q`=복귀 |
-| 2 | YOLO 코 좌표 추적 | 손 2초 이상 들면 자동 확정, `r`=재추적, `q`=복귀 |
-| 3 | 방향키 위치 제어 | `a`/`d`=yaw, `w`/`s`=pitch, `q`=복귀 |
-| 4 | 음향테스트용 위치 고정 (0°,0°) | `q`=복귀 |
+| 2 | 사람을 동물로 간주해 추적 | 1번과 동일 |
+| 3 | YOLO 코 좌표 추적 | 손 2초 이상 들면 자동 확정, `r`=재추적, `q`=복귀 |
+| 4 | 방향키 위치 제어 | `a`/`d`=yaw, `w`/`s`=pitch, `q`=복귀 |
+| 5 | 음향테스트용 위치 고정 (0°,0°) | `q`=복귀 |
 
 공통 규칙:
 - **박스 색**: 탐지되면 노란 박스, 추적이 확정(타겟모드)되면 초록 박스로 바뀐다.
 - **화면 하단 키 힌트바**가 고정 표시된다.
 - `q`/`ESC`로 **정상** 종료하면 "숙인위치"(yaw=0°, pitch=-4°)로 1초간 복귀한
   뒤 메뉴로 돌아간다. `Ctrl+C` 강제중지는 복귀 없이 바로 멈춘다(의도된 동작).
-- 1·2번은 포트를 `Tracker`로 새로 열어야 해서 메뉴용 연결을 잠깐 닫았다가
-  다시 연다. 3·4번은 그 연결을 그대로 쓴다.
+- 1·2·3번은 포트를 `Tracker`로 새로 열어야 해서 메뉴용 연결을 잠깐 닫았다가
+  다시 연다. 4·5번은 그 연결을 그대로 쓴다.
 
 **1번 상세**: `main.py`와 동일한 `animal/wildlife.py`/`camera.py`/`settings.py`를
 재사용(`EscapeTracker` 포함). 탐지(노란 박스)는 시작하자마자 바로 되지만,
@@ -272,7 +274,17 @@ torque = Kp·(q_des − q) + Kd·(dq_des − dq) + tau_ff
 `r`을 누른 것처럼 자동으로 타겟 모드가 풀린다(도주 조건으로 풀린 경우는
 자동 재선정되므로 타겟 모드는 유지).
 
-**2번 상세**: `people/main_facetrack.py`와 같은 `YoloPoseDetector`. 대상 몸
+**2번 상세**: 실제 동물 없이 1번의 추적 알고리즘을 시험하는 용도. 루프·
+`EscapeTracker`·`w`/`r` 게이팅·화면 표시가 1번과 완전히 같고, 탐지 모델만
+`weights.pt` 대신 `yolov8n-pose.pt`로 바꿔 사람을 동물 한 종처럼 넣는다
+(`animal/person_proxy.py`). COCO YOLO엔 torso 클래스가 없어서 어깨·골반
+키포인트 4점을 감싸는 박스를 torso로 쓰므로, torso 조준과 급속이동 판정이
+1번과 똑같이 동작한다(골반이 화면 밖이면 torso 미검출 → bbox 중심 폴백).
+사람이 잡히면 멧돼지 WAV를 재생한다. 관련 값은 `animal/settings.py`의
+`PERSON_*`(모델 경로, 음원 그룹, 키포인트 최소 신뢰도)이고, 도주 판정
+임계값 등 나머지는 1번 설정을 그대로 공유한다.
+
+**3번 상세**: `people/main_facetrack.py`와 같은 `YoloPoseDetector`. 대상 몸
 박스와 코 좌표를 항상 표시하고, 손을 `ARM_UP_THRESHOLD`(2초) 이상 들어야
 모터가 실제로 따라간다(확정 순간 `audio/track_start2.mp3` 1회 재생).
 확정이 아니면 기본 자세(0°, 30°)로 복귀한다.

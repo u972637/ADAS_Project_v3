@@ -59,3 +59,17 @@ EDGE_MARGIN_PX = 2              # 화면 가장자리에 걸친(잘린) bbox는 
 # 조건 2: torso 중심의 급속 이동(박스 너비로 정규화)도 도주로 판단
 TORSO_WINDOW_SIZE = 5
 TORSO_SPEED_THRESHOLD = 0.15
+
+# ──────────────────────────────────────────────
+# 사람 대역(person proxy) 테스트 — start.sh 2번
+# ──────────────────────────────────────────────
+# 실제 멧돼지/고라니 없이 위 EscapeTracker(타겟 ID 고정·도주감지·torso 조준)
+# 를 시험하려고, 사람을 동물 한 종처럼 취급해 같은 파이프라인에 넣는다.
+# 동물 모델(weights.pt)엔 torso 클래스가 있지만 COCO YOLO 엔 없으므로, pose
+# 모델의 어깨·골반 키포인트로 torso 박스를 만들어 대신 쓴다
+# (animal/person_proxy.py). 도주 판정 임계값·재생 정책 등 나머지 값은 위
+# 동물 설정을 그대로 공유한다.
+PERSON_MODEL_PATH = PROJECT_ROOT / "assets" / "models" / "yolov8n-pose.pt"
+PERSON_CLASS_TO_AUDIO = {0: "boar"}          # 사람이 잡히면 멧돼지 WAV 재생
+PERSON_EXPECTED_MODEL_NAMES = {0: "person"}
+PERSON_KEYPOINT_CONFIDENCE = 0.5             # torso 를 만들 어깨·골반 키포인트 최소 신뢰도

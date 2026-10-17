@@ -543,15 +543,25 @@ class WildlifeDeterrent:
 
     @classmethod
     def from_settings(cls, *, player: object | None = None,
-                      camera: object | None = None) -> WildlifeDeterrent:
+                      camera: object | None = None,
+                      class_map: Mapping[int, str] | None = None,
+                      expected_names: Mapping[int, str] | None = None,
+                      torso_class_id: int | None = None,
+                      torso_confidence: float | None = None) -> WildlifeDeterrent:
+        """Build from animal/settings.py. The class/torso overrides let a
+        different model (start.sh 2번: 사람 대역, animal/person_proxy.py)
+        reuse every other setting — EscapeTracker thresholds, playback policy."""
         if player is None:
             command = settings.AUDIO_PLAYER_COMMAND or (
                 "afplay" if platform.system() == "Darwin" else "aplay"
             )
             player = DryRunPlayer() if settings.DRY_RUN else WavPlayer(command)
+        class_map = dict(settings.CLASS_TO_AUDIO if class_map is None else class_map)
+        expected_names = dict(settings.EXPECTED_MODEL_NAMES
+                              if expected_names is None else expected_names)
         return cls(
-            class_map=dict(settings.CLASS_TO_AUDIO),
-            expected_names=dict(settings.EXPECTED_MODEL_NAMES),
+            class_map=class_map,
+            expected_names=expected_names,
             min_selection_confidence=settings.MIN_SELECTION_CONFIDENCE,
             policy=TriggerPolicy(
                 min_confidence=settings.MIN_PLAYBACK_CONFIDENCE,
@@ -561,7 +571,7 @@ class WildlifeDeterrent:
             ),
             catalog=AudioCatalog.from_manifest(
                 settings.AUDIO_MANIFEST,
-                set(settings.CLASS_TO_AUDIO.values()),
+                set(class_map.values()),
                 settings.MIN_AUDIO_FILES_PER_CLASS,
             ),
             player=player,
@@ -576,17 +586,23 @@ class WildlifeDeterrent:
                 torso_window_size=settings.TORSO_WINDOW_SIZE,
                 torso_speed_threshold=settings.TORSO_SPEED_THRESHOLD,
             ),
-            torso_class_id=settings.TORSO_CLASS_ID,
-            torso_confidence=settings.TORSO_TRACK_CONFIDENCE,
+            torso_class_id=(settings.TORSO_CLASS_ID
+                            if torso_class_id is None else torso_class_id),
+            torso_confidence=(settings.TORSO_TRACK_CONFIDENCE
+                              if torso_confidence is None else torso_confidence),
             tracker_config=settings.TRACKER_CONFIG,
             camera=camera,
         )
 
     def process_result(self, raw: object, captured_at: float) -> Event:
+        frame_size, detections = read_detections(raw)
+        return self.process_detections(frame_size, detections, captured_at)
+
+    def process_detections(self, frame_size: tuple[int, int],
+                           detections: Sequence[Detection], captured_at: float) -> Event:
         """Lock one track ID via self.escape_tracker and only aim/play for
         that locked, not-yet-fled target — not simply this frame's highest
         confidence detection (see EscapeTracker for why)."""
-        frame_size, detections = read_detections(raw)
         width, height = frame_size
         animals = [d for d in detections
                    if d.class_id in self.class_map
