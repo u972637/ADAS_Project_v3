@@ -83,7 +83,8 @@ animal/                        main.py 가 쓰는 모듈 (main.py 자신만 빼�
   audio.py                       WAV 목록 검증·무작위 선택·재생
   mp3_player.py                  MP3 재생기 (pygame) — people/, tools/ 도 같이 씀
 assets/models/weights.pt       동물 탐지 YOLO 가중치
-assets/audio/                  멧돼지·고라니 WAV + 출처 매니페스트
+assets/audio/                  멧돼지·고라니 WAV (<동물>/*.wav 를 그대로 읽음)
+assets/audio_eq/               위 WAV에 1.5~2kHz 강조 EQ를 씌운 버전 (tools/eq_filter.py 가 생성)
 
 people/
   main_facetrack.py             얼굴 추적 실행 진입점 (구 main.py)
@@ -91,7 +92,8 @@ detection/
   base.py                        PoseDetector 인터페이스, PersonPose 데이터 구조
   yolo_pose.py                   YOLOv8 pose 기반 PoseDetector 구현체
 assets/models/yolov8n-pose.pt  YOLOv8 pose 가중치 (동물 탐지와 별개)
-audio/                         얼굴추적 상황별 안내 음성 (mp3)
+assets/models/yolov8n.pt       YOLOv8 일반 탐지 가중치 (현재 코드에서 안 씀)
+assets/voice/                  얼굴추적 상황별 안내 음성 (mp3)
 legacy/                        이전 세대 코드 (Dynamixel 트래커, 라즈베리파이 스트림 서버 — 참고용)
 
 motor/                         공용 — 모터/CAN
@@ -106,6 +108,7 @@ tools/                         공용 — 점검 도구
   motor_manual_control.py         start.sh 가 실행하는 실제 구현
   zero_actuator.py                영점 설정
   play_audio.py                   클래스별 음성 재생만 확인 (야생동물용)
+  eq_filter.py                    퇴치 음원 1.5~2kHz 강조 EQ 생성 + 원본/EQ 비교 재생
 
 audio_test/                    스피커 음향 측정 데이터 시트 (CSV)
 ```
@@ -160,18 +163,43 @@ uv run main.py
 | `ENABLE_MOTOR` | `False` | `True`면 모터로 실제 조준 |
 | `HEADLESS` | `False` | `True`면 화면 없이 실행(Ctrl+C로 종료) |
 | `AUDIO_PLAYER_COMMAND` | 자동(`aplay`/`afplay`) | WAV 재생 명령 override |
+| `USE_EQ_AUDIO` | `False` | `True`면 원본 대신 1.5~2kHz 강조 EQ 음원(`assets/audio_eq/`) 재생 — 아래 참고 |
 
 실행 중 키: `q`=종료, `e`=모터 중앙 복귀.
 
 재생 규칙: 3프레임 연속 탐지 시 탐지 사건당 1회, 클래스 공통 쿨다운 10초.
 대상은 위 `EscapeTracker`가 lock한 개체 하나(여러 동물이 있어도 ID로 하나만
-계속 따라감). 음원 출처는 [매니페스트](assets/audio/manifest.json) 참고.
+계속 따라감). 음원은 `assets/audio/<음원 그룹>/*.wav`를 그대로 읽으므로
+파일을 넣고 빼기만 하면 된다(그룹당 최소 10개).
 
 모델·카메라 없이 음성만 확인:
 
 ```bash
 uv run python tools/play_audio.py   # tools/play_audio.py 의 CLASS_ID로 그룹 지정
 ```
+
+### 음원 EQ (1.5~2kHz 강조)
+
+EQ = 주파수별 볼륨 조절. 스피커 지향성이 잘 나타나는 1.5~2kHz는 그대로
+두고 나머지 대역은 −12dB 줄여서 그 대역을 상대적으로 강조한
+버전을 `assets/audio_eq/`에 만들어 둔다(`audio_test/with_reflector.csv`
+기준 2000Hz는 45~90°에서 0° 대비 약 20~23dB 줄어 지향성이 뚜렷함).
+
+```bash
+uv run python tools/eq_filter.py                    # 20개 생성 + 클립별 비교표 출력
+uv run python tools/eq_filter.py --compare boar_07  # 원본 → 1초 → EQ 연속 재생
+```
+
+- 선형 위상 FIR이라 대역별 볼륨만 바뀌고 소리의 시간 모양·길이는 원본과 같다.
+  1.0→1.5kHz, 2→3kHz는 서서히 전환.
+- 평균 크기(RMS)를 원본과 맞춰서, 원본과 비교할 때 소리 크기 차이로 판단이 흐려지지
+  않게 했다(최대값은 −1dBFS 이하로 제한).
+- 대역·감쇠량 등은 `tools/eq_filter.py` 맨 위 상수만 바꾸고 다시 실행하면 된다.
+  원본에서 빠진 클립의 EQ 파일은 그때 같이 지워진다.
+- EQ는 이미 있는 소리의 크기만 바꾸므로, 원본에 1.5~2kHz 성분이 거의 없는
+  클립(예: `boar_07` 0.1% → 1.3%)은 강조 효과가 약하다 — 생성 시 출력되는
+  "1.5~2kHz 비중" 열로 클립별 효과를 확인할 것.
+- 실제 재생에 쓰려면 `animal/settings.py`의 `USE_EQ_AUDIO = True`.
 
 > 실제 동물 회피 효과, 카메라·모터·스피커 통합 야외 동작은 아직 검증 전이다.
 
@@ -202,7 +230,7 @@ uv run people/main_facetrack.py --motor   # + Damiao 모터 제어
   지키면 어떤 모델로도 교체 가능 — 기본 구현은 `detection/yolo_pose.py`의
   `YoloPoseDetector`(YOLOv8 pose, `assets/models/yolov8n-pose.pt`, GPU 자동 사용).
   파인튜닝 모델로 바꾸려면 `people/main_facetrack.py`의 `MODEL_PATH`만 수정.
-- `animal/mp3_player.py`/`audio/*.mp3`가 안내 음성을 담당.
+- `animal/mp3_player.py`/`assets/voice/*.mp3`가 안내 음성을 담당.
 - `legacy/`: `face_tracker_xl430_06_14.py`(이전 세대 Dynamixel 트래커),
   `local.py`(라즈베리파이 영상 스트림 서버, 별개 용도) — 둘 다 참고용.
 
@@ -286,7 +314,7 @@ torque = Kp·(q_des − q) + Kd·(dq_des − dq) + tau_ff
 
 **3번 상세**: `people/main_facetrack.py`와 같은 `YoloPoseDetector`. 대상 몸
 박스와 코 좌표를 항상 표시하고, 손을 `ARM_UP_THRESHOLD`(2초) 이상 들어야
-모터가 실제로 따라간다(확정 순간 `audio/track_start2.mp3` 1회 재생).
+모터가 실제로 따라간다(확정 순간 `assets/voice/track_start2.mp3` 1회 재생).
 확정이 아니면 기본 자세(0°, 30°)로 복귀한다.
 
 ```bash

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import random
 import shutil
 import subprocess
@@ -38,15 +37,17 @@ class AudioCatalog:
         self._rng = rng or random.Random()
 
     @classmethod
-    def from_manifest(
-        cls, manifest: Path, labels: set[str], min_per_class: int
+    def from_directory(
+        cls, root: Path, labels: set[str], min_per_class: int
     ) -> AudioCatalog:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-        files_by_label: dict[str, list[Path]] = {label: [] for label in labels}
-        for entry in data["clips"]:
-            label = entry["class"]
-            if label in files_by_label:
-                files_by_label[label].append((manifest.parent / entry["file"]).resolve())
+        """Load <root>/<label>/*.wav — the folder name is the audio label."""
+        for label in labels:
+            if not (root / label).is_dir():
+                raise FileNotFoundError(f"audio folder not found: {root / label}")
+        files_by_label = {
+            label: sorted(path.resolve() for path in (root / label).glob("*.wav"))
+            for label in labels
+        }
         return cls(files_by_label, min_per_class)
 
     def next(self, label: str) -> Path:

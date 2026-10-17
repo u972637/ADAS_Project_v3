@@ -32,7 +32,7 @@ YOLO pose(yolov8n-pose.pt)로 바꿔 사람을 동물 한 종처럼 취급한다
 만들고(animal/person_proxy.py), 사람이 잡히면 멧돼지 WAV를 재생한다
 (animal/settings.py 의 PERSON_* 설정).
 
-3번에서 손들기로 추적이 확정되는 그 순간(락온)에 audio/track_start2.mp3 를
+3번에서 손들기로 추적이 확정되는 그 순간(락온)에 assets/voice/track_start2.mp3 를
 1회 재생해 추적 시작을 알린다. 화면에는 검출된 코 좌표를 항상 표시하지만, 실제로
 motor/dm4310_tracker.py 의 Tracker.update(x, y) 를 호출해 모터를 움직이는
 건 그 사람이 ARM_UP_THRESHOLD(2초) 이상 손을 들고 있어야 시작되고(=
@@ -154,7 +154,7 @@ ARM_UP_THRESHOLD = 2.0    # 초 — 이만큼 손을 들고 있어야 추적 확
 ARM_DOWN_GRACE = 10       # 프레임 — 이만큼 넘게 손을 내리면 추적 해제
 
 # 3번("인식모드") 진입 시 1회 재생할 안내음
-TRACK_START2_PATH = os.path.join(PROJECT_ROOT, "audio", "track_start2.mp3")
+TRACK_START2_PATH = os.path.join(PROJECT_ROOT, "assets", "voice", "track_start2.mp3")
 
 # 2592x1944 그대로 창을 띄우면 화면보다 커서 축소 표시만 한다
 # (Tracker.update() 에는 항상 원본 해상도 좌표를 그대로 넘김).
@@ -622,7 +622,7 @@ def run_auto_track():
     "타겟 모드 → 아님"으로 바뀌는 순간에만 트리거한다.
 
     손을 들어 ARM_UP_THRESHOLD초가 "막" 지나서 추적이 확정되는 그 순간에만
-    audio/track_start2.mp3 를 1회 재생한다(추적 중엔 다시 재생하지 않음).
+    assets/voice/track_start2.mp3 를 1회 재생한다(추적 중엔 다시 재생하지 않음).
     화면에는 대상 사람의 몸 박스를 항상 표시하며, 확정 전엔 노란색, 확정
     (타겟 모드)되면 초록색으로 바뀐다. **r 키**를 누르면 확정 상태를 즉시
     해제하고(재추적) 다시 손들기 대기 상태로 돌아간다. q/ESC 로 정상

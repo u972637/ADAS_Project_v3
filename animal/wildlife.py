@@ -569,8 +569,8 @@ class WildlifeDeterrent:
                 release_frames=settings.RELEASE_FRAMES,
                 cooldown_seconds=settings.COOLDOWN_SECONDS,
             ),
-            catalog=AudioCatalog.from_manifest(
-                settings.AUDIO_MANIFEST,
+            catalog=AudioCatalog.from_directory(
+                settings.AUDIO_DIR,
                 set(class_map.values()),
                 settings.MIN_AUDIO_FILES_PER_CLASS,
             ),

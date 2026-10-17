@@ -90,7 +90,7 @@ COLOR_CORRECTION = {
     "brightness_gain": 1.0,
 }
 
-AUDIO_DIR = os.path.join(PROJECT_ROOT, "audio")
+AUDIO_DIR = os.path.join(PROJECT_ROOT, "assets", "voice")
 TRACK_START_MP3 = os.path.join(AUDIO_DIR, "track_start.mp3")
 SAMPLE_MP3      = os.path.join(AUDIO_DIR, "sample.mp3")
 ROUTE_EXIT_MP3  = os.path.join(AUDIO_DIR, "route_exit.mp3")

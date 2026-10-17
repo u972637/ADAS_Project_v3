@@ -26,7 +26,15 @@ CONSECUTIVE_FRAMES = 3
 RELEASE_FRAMES = 3
 COOLDOWN_SECONDS = 10.0
 
-AUDIO_MANIFEST = PROJECT_ROOT / "assets/audio/manifest.json"
+# 음원은 <AUDIO_DIR>/<CLASS_TO_AUDIO 값>/*.wav 를 그대로 읽는다 — 파일을 넣고
+# 빼기만 하면 되고 목록 파일은 없다.
+# USE_EQ_AUDIO 가 True 면 tools/eq_filter.py 가 만든 1.5~2kHz 강조 EQ 음원
+# (assets/audio_eq/)을 재생한다 — main.py, start.sh 1·2번, tools/play_audio.py
+# 전부 이 값을 따름.
+USE_EQ_AUDIO = False
+ORIGINAL_AUDIO_DIR = PROJECT_ROOT / "assets/audio"
+EQ_AUDIO_DIR = PROJECT_ROOT / "assets/audio_eq"
+AUDIO_DIR = EQ_AUDIO_DIR if USE_EQ_AUDIO else ORIGINAL_AUDIO_DIR
 MIN_AUDIO_FILES_PER_CLASS = 10
 
 # ──────────────────────────────────────────────

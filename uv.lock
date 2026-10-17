@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = "==3.10.*"
 resolution-markers = [
     "sys_platform == 'darwin'",
@@ -20,6 +20,7 @@ dependencies = [
     { name = "pillow" },
     { name = "pygame" },
     { name = "pyserial" },
+    { name = "scipy" },
     { name = "ultralytics" },
 ]
 
@@ -32,6 +33,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.0" },
     { name = "pygame", specifier = ">=2.5" },
     { name = "pyserial", specifier = ">=3.5" },
+    { name = "scipy", specifier = ">=1.10" },
     { name = "ultralytics", specifier = "==8.4.72" },
 ]
 
