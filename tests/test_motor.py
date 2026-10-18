@@ -109,14 +109,30 @@ class MotorTests(unittest.TestCase):
         t.update(CENTER_X, CENTER_Y)
         self.assertEqual(t._target, {"yaw": 0.1, "pitch": 0.1})
 
-    def test_hold_and_default_ramp(self):
+    def test_hold_brakes_and_default_uses_minimum_duration(self):
         t = self.tracker()
         t.go_to(0.2, 0.3)
         t.hold()
-        self.assertIsNone(t._ramp)
+        self.assertIsNone(t._command.position)
         self.assertEqual(t._target, {"yaw": 0.1, "pitch": 0.1})
         t.go_default()
-        self.assertAlmostEqual(t._ramp["goal"]["pitch"], math.radians(30))
+        self.assertAlmostEqual(t._target["pitch"], math.radians(30))
+        self.assertEqual(t._command.minimum_duration, 2.0)
+
+    def test_motion_complete_waits_for_both_axis_packets(self):
+        t = self.tracker()
+        original = t._ctrl.controlMIT
+
+        def send(*args):
+            self.assertFalse(t.motion_complete())
+            original(*args)
+            if len(t._ctrl.sent) == 2:
+                t._stop_event.set()
+
+        t._ctrl.controlMIT = send
+        t._control_thread()
+        self.assertEqual(len(t._ctrl.sent), 2)
+        self.assertTrue(t.motion_complete())
 
     def test_default_return_uses_configured_pose_not_hardcoded_angles(self):
         t = self.tracker()
@@ -125,8 +141,8 @@ class MotorTests(unittest.TestCase):
             patch.object(module, "DEFAULT_PITCH_DEG", 20),
         ):
             t.go_default()
-        self.assertAlmostEqual(t._ramp["goal"]["yaw"], math.radians(5))
-        self.assertAlmostEqual(t._ramp["goal"]["pitch"], math.radians(20))
+        self.assertAlmostEqual(t._target["yaw"], math.radians(5))
+        self.assertAlmostEqual(t._target["pitch"], math.radians(20))
 
     def test_mode_not_confirmed_fails_startup(self):
         with patch.object(Control, "mode", False):
@@ -166,6 +182,9 @@ class MotorTests(unittest.TestCase):
     def test_stream_converts_goal_once_and_preserves_raw_feedforward(self):
         t = self.tracker()
         t.go_to(0.2, 0.3, duration=0)
+        now = time.monotonic()
+        initial, _, _ = t._next_reference(now)
+        self.assertEqual(initial["yaw"][0], 0.1)  # No instantaneous position step.
         sent = []
 
         def send(*args):
@@ -173,11 +192,45 @@ class MotorTests(unittest.TestCase):
             if len(sent) == 2:
                 t._stop_event.set()
 
-        with patch.object(t._ctrl, "controlMIT", side_effect=send):
+        with (
+            patch.object(t._ctrl, "controlMIT", side_effect=send),
+            patch.object(module.time, "monotonic", return_value=now + 0.02),
+        ):
             t._control_thread()
-        self.assertAlmostEqual(sent[0][3], -0.2)
-        self.assertAlmostEqual(sent[1][3], -0.3)
+        self.assertLess(sent[0][3], -0.1)
+        self.assertGreater(sent[0][3], -0.2)
+        self.assertLess(sent[1][3], -0.1)
+        self.assertGreater(sent[1][3], -0.3)
+        self.assertLess(sent[0][4], 0)  # dq_ref is converted exactly once too.
+        self.assertLess(sent[1][4], 0)
         self.assertEqual(sent[1][5], 2.3)
+
+    def test_latest_destination_replaces_pending_frames(self):
+        t = self.tracker()
+        for x in (CENTER_X + 100, CENTER_X - 150, CENTER_X + 200.5):
+            t.update(x, CENTER_Y)
+        self.assertEqual(t._planner.replans, 0)
+        t._next_reference(time.monotonic())
+        self.assertEqual(t._planner.replans, 1)
+        self.assertEqual(t._command.position, tuple(t._target[a] for a in AXES))
+
+    def test_overdue_motor_io_latches_fault(self):
+        t = self.tracker()
+        start = time.monotonic()
+        clock = [start]
+
+        def send(*args):
+            clock[0] += 0.025  # 50 ms for two axes, with no actual sleeping.
+
+        with (
+            patch.object(module.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(t._ctrl, "controlMIT", side_effect=send),
+            self.assertLogs(module.logger, level="ERROR"),
+        ):
+            t._control_thread()
+        self.assertFalse(t.health()["ok"])
+        self.assertEqual(len(t._ctrl.disabled), 2)
+        self.assertGreater(t.health()["motion"]["max_cycle_work_ms"], 40)
 
     def test_nan_goal_and_negative_duration_rejected(self):
         t = self.tracker()

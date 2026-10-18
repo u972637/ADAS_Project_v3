@@ -41,6 +41,7 @@ class Camera:
         self.holds = self.homes = 0
         self.converged = True
         self.ok = True
+        self.braking_done = True
 
     def aim(self, target, size, timestamp):
         self.aims.append((target, timestamp))
@@ -57,6 +58,9 @@ class Camera:
 
     def home(self):
         self.homes += 1
+
+    def frozen_ready(self):
+        return self.braking_done
 
     def health(self):
         return {"ok": self.ok, "fault": None if self.ok else "test fault"}
@@ -112,6 +116,34 @@ def start_warning(s):
 
 
 class ScenarioTests(unittest.TestCase):
+    def test_frames_captured_before_braking_finished_cannot_seed_baseline(self):
+        service = make_service()
+        service.camera.braking_done = False
+        for t in (0, 0.1, 0.2):
+            feed(service, t)
+        service.camera.braking_done = True
+        # Inference completes at 1.0, but this image predates stationary feedback.
+        feed(service, 0.3, now=1.0)
+        feed(service, 0.5, now=1.1)
+        self.assertFalse(service.escape_tracker.baseline_ready)
+        self.assertEqual(service.player.requests, [])
+        for t in (1.2, 1.4):
+            feed(service, t, now=t + 0.05)
+        self.assertEqual(service.phase, Phase.PLAY_WARNING)
+
+    def test_braking_delays_escape_baseline_and_audio_until_stationary(self):
+        service = make_service()
+        service.camera.braking_done = False
+        for i in range(15):
+            feed(service, i / 10)
+        self.assertEqual(service.phase, Phase.BASELINE_WARNING)
+        self.assertFalse(service.escape_tracker.baseline_ready)
+        self.assertEqual(service.player.requests, [])
+        service.camera.braking_done = True
+        for i in range(15, 18):
+            feed(service, i / 10)
+        self.assertEqual(service.phase, Phase.PLAY_WARNING)
+
     def test_warning_observe_five_seconds_then_reaim_before_threat(self):
         s = start_warning(make_service())
         self.assertEqual(s.phase, Phase.PLAY_WARNING)

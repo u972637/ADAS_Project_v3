@@ -75,6 +75,13 @@ class TrackerCameraController:
         self.reset()
         self.tracker.go_default()
 
+    def frozen_ready(self):
+        """Do not collect escape baselines while the reference is still braking."""
+        return self.tracker.motion_complete() and all(
+            abs(self.tracker.get_state(axis)[1]) <= settings.AIM_MAX_VELOCITY_RAD_S
+            for axis in ("yaw", "pitch")
+        )
+
     def health(self):
         return self.tracker.health()
 
@@ -94,6 +101,9 @@ class SimulatedCameraController(TrackerCameraController):
 
         def go_default(self):
             pass
+
+        def motion_complete(self):
+            return True
 
         def health(self):
             return {"ok": True, "fault": None}

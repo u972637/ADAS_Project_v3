@@ -121,7 +121,8 @@ def _bow_tracker(tracker: Tracker, duration: float = BOW_DURATION):
     tracker.go_to(yaw_rad=math.radians(BOW_YAW_DEG),
                   pitch_rad=math.radians(BOW_PITCH_DEG),
                   duration=duration)
-    time.sleep(duration)
+    if not tracker.wait_until_complete():
+        raise RuntimeError("기본 자세 이동 시간 초과")
 
 
 # ──────────────────────────────────────────────
@@ -174,10 +175,8 @@ class ManualController:
     def ramp_to(self, goal_deg, duration):
         self.target_deg = {a: clamp(goal_deg[a], *_RANGE_DEG[a]) for a in AXES}
         self.tracker.go_to(*(math.radians(self.target_deg[a]) for a in AXES), duration=duration)
-        deadline = time.monotonic()+duration
-        while time.monotonic() < deadline:
-            self.tracker.assert_healthy()
-            time.sleep(0.01)
+        if not self.tracker.wait_until_complete():
+            raise RuntimeError("실험 자세 이동 시간 초과")
 
     def close(self):
         self.tracker.close()

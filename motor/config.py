@@ -27,12 +27,19 @@ KD = {"yaw": KD_YAW, "pitch": KD_PITCH}
 TAU_FF_YAW, TAU_FF_PITCH = 0.0, 2.3
 RAW_TAU_FF = {"yaw": TAU_FF_YAW, "pitch": TAU_FF_PITCH}
 CONTROL_FREQ = 500
+# Initial commissioning limits, deliberately above the 0.2 rad/s settle test.
+# These bound reference motion, not measured physical acceleration or torque.
+MOTION_MAX_VELOCITY = {"yaw": 1.5, "pitch": 1.2}  # rad/s
+MOTION_MAX_ACCELERATION = {"yaw": 8.0, "pitch": 6.0}  # rad/s²
+MOTION_MAX_JERK = {"yaw": 100.0, "pitch": 80.0}  # rad/s³
+MAX_CONTROL_GAP_SECONDS = 0.040  # Fault instead of jumping through a long stall.
+MOTION_FINISH_TIMEOUT_SECONDS = 5.0
 MAX_STEP_RAD = 0.6
 DEADZONE_PX = 8.0
 # Shared operating default pose, in logical coordinates (not encoder zero).
 # stop/normal exit call Tracker.go_default(); change the pose here only.
 DEFAULT_YAW_DEG, DEFAULT_PITCH_DEG = 0.0, 30.0
-GO_CENTER_DURATION = 2.0
+GO_CENTER_DURATION = 2.0  # Minimum return duration; limits may require longer.
 # J4310 V1.0 docs list faults 0x8..0xE but do not define the normal-state nibble.
 # Accept 0/1 for firmware compatibility; report the raw value in health().
 # On firmware confirmed to report 0=disabled / 1=enabled, set this to (1,).

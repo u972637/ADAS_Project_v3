@@ -95,7 +95,7 @@ def run_session(
     from ultralytics import YOLO
     from animal.camera import CameraCapture, open_camera
     from animal.aiming import TrackerCameraController, SimulatedCameraController
-    from motor.config import FRAME_W, FRAME_H, GO_CENTER_DURATION
+    from motor.config import FRAME_W, FRAME_H
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
@@ -242,8 +242,13 @@ def run_session(
         finally:
             guard.close()  # No resume command may cancel the final return ramp.
             service.stop()
-            # Let the controlled home ramp finish before disabling the motors on normal exit.
+            # Limits may extend the requested return duration; wait for the actual plan.
             if tracker and tracker.health()["ok"]:
-                deadline = time.monotonic() + GO_CENTER_DURATION
-                while time.monotonic() < deadline and tracker.health()["ok"]:
-                    time.sleep(0.05)
+                if not tracker.wait_until_complete():
+                    logger.error(
+                        "Default-pose return timed out; closing motor connection"
+                    )
+            if tracker:
+                logger.info(
+                    "Motion timing summary: %s", tracker.health().get("motion", {})
+                )

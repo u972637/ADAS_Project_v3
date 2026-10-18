@@ -1,0 +1,26 @@
+{
+  "python": "3.10.20",
+  "platform": "Linux-6.17.0-19-generic-x86_64-with-glibc2.39",
+  "processor": "x86_64",
+  "ruckig": "0.19.4",
+  "control_period_ms": 2,
+  "goal_period_ms": 40,
+  "sampling": {
+    "samples": 57000,
+    "median_us": 1.47,
+    "p99_us": 2.72,
+    "max_us": 21.502
+  },
+  "replanning": {
+    "samples": 3000,
+    "median_us": 5.69,
+    "p99_us": 13.462,
+    "max_us": 20.013
+  },
+  "rest_to_rest_yaw_degrees_duration_s": {
+    "1": 0.17742267193219582,
+    "5": 0.3033885013991656,
+    "15": 0.4505397332265121
+  },
+  "scope": "Local reference computation only; excludes CAN, scheduling, inference and plant response."
+}

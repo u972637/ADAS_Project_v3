@@ -82,6 +82,7 @@ class WildlifeDeterrent:
         self._confirmation_count = 0
         self._last_result_at = None
         self._observation_started = None
+        self._frozen_ready_since = None
         self._generation = 0
         self.identity_tracker = (
             None  # Lazy construction; no Ultralytics needed by state tests.
@@ -176,6 +177,7 @@ class WildlifeDeterrent:
             self.camera.reset()
 
     def _hold(self):
+        self._frozen_ready_since = None
         if self.camera:
             self.camera.hold()
 
@@ -335,12 +337,21 @@ class WildlifeDeterrent:
             if d.class_id == self.torso_class_id
             and d.confidence >= self.torso_confidence
         ]
+        observe = self.phase in FROZEN_PHASES
+        if self.phase in (Phase.BASELINE_WARNING, Phase.BASELINE_THREAT):
+            ready = self.camera is not None and self.camera.frozen_ready()
+            if not ready:
+                self._frozen_ready_since = None
+            elif self._frozen_ready_since is None:
+                self._frozen_ready_since = now
+            # A result arriving after braking may have been CAPTURED during motion.
+            observe = ready and captured_at >= self._frozen_ready_since
         step = self.escape_tracker.step(
             captured_at,
             animals,
             torsos,
             *frame_size,
-            observe=self.phase in FROZEN_PHASES,
+            observe=observe,
         )
         self.last_escape_step = step
         # Termination is authoritative; never fall through to aim or audio on this frame.

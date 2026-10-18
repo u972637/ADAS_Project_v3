@@ -14,6 +14,7 @@ import time
 import serial
 
 from motor.DM_CAN import Motor, MotorControl, DM_Motor_Type, Control_Type
+from motor.trajectory import MotionCommand, MotionPlanner
 from motor.config import (
     AXES as AXES,
     DEVICENAME as DEVICENAME,
@@ -52,6 +53,8 @@ from motor.config import (
     HEALTHY_STATUS_CODES as HEALTHY_STATUS_CODES,
     FEEDBACK_TIMEOUT_SECONDS as FEEDBACK_TIMEOUT_SECONDS,
     STARTUP_TIMEOUT_SECONDS as STARTUP_TIMEOUT_SECONDS,
+    MAX_CONTROL_GAP_SECONDS as MAX_CONTROL_GAP_SECONDS,
+    MOTION_FINISH_TIMEOUT_SECONDS as MOTION_FINISH_TIMEOUT_SECONDS,
     to_motor as to_motor,
     from_motor as from_motor,
     clamp_angle as clamp_angle,
@@ -106,7 +109,13 @@ class Tracker:
         self._closed = False
         self._fault = None
         self._motor = {}
-        self._ramp = None
+        self._command_version = self._applied_version = 0
+        self._last_sent_version = -1
+        self._motion_complete = False
+        self._planned_complete = False
+        self._max_tick_gap = self._max_cycle_work = self._max_goal_latency = 0.0
+        self._cycle_overruns = 0
+        self._planner = None
         self._actual_freq = self._update_actual_freq = 0.0
         self._update_count = 0
         self._update_window_t0 = time.monotonic()
@@ -130,6 +139,13 @@ class Tracker:
                 if abs(self._current[axis][0]) > RANGE_RAD[axis]:
                     raise MotorFault(f"{axis}: startup angle outside configured range")
             self._target = {axis: self._current[axis][0] for axis in AXES}
+            self._planner = MotionPlanner(
+                tuple(self._target[a] for a in AXES),
+                tuple(self._current[a][1] for a in AXES),
+            )
+            self._reference = {a: (*self._current[a][:2], 0.0) for a in AXES}
+            self._command = MotionCommand(tuple(self._target[a] for a in AXES))
+            self._requested_at = time.monotonic()
             self._thread = threading.Thread(target=self._control_thread, daemon=True)
             self._thread.start()
         except BaseException:
@@ -163,34 +179,53 @@ class Tracker:
     def _control_thread(self):
         next_t = window_t0 = time.monotonic()
         ticks = 0
+        previous_tick = None
         try:
             while not self._stop_event.is_set():
                 now = time.monotonic()
+                if previous_tick is not None:
+                    gap = now - previous_tick
+                    self._max_tick_gap = max(self._max_tick_gap, gap)
+                    if gap > MAX_CONTROL_GAP_SECONDS:
+                        raise MotorFault(
+                            f"control loop stalled for {gap * 1000:.1f} ms"
+                        )
+                previous_tick = now
                 current = {
                     axis: checked_feedback(axis, m.snapshot(), now)
                     for axis, m in self._motor.items()
                 }
                 with self._lock:
                     self._current = current
-                    if self._ramp is not None:
-                        r = self._ramp
-                        fraction = min((now - r["t0"]) / r["duration"], 1.0)
-                        self._target = {
-                            a: r["start"][a] + fraction * (r["goal"][a] - r["start"][a])
-                            for a in AXES
-                        }
-                        if fraction >= 1:
-                            self._ramp = None
-                    goals = dict(self._target)
+                reference, version, requested_at = self._next_reference(now)
+                if time.monotonic() - now > MAX_CONTROL_GAP_SECONDS:
+                    raise MotorFault("reference calculation missed control deadline")
                 for axis in AXES:
                     self._ctrl.controlMIT(
                         self._motor[axis],
                         KP[axis],
                         KD[axis],
-                        to_motor(axis, clamp_angle(axis, goals[axis])),
-                        0.0,
+                        to_motor(axis, reference[axis][0]),
+                        to_motor(axis, reference[axis][1]),
                         RAW_TAU_FF[axis],
                     )
+                completed_at = time.monotonic()
+                work = completed_at - now
+                self._max_cycle_work = max(self._max_cycle_work, work)
+                self._cycle_overruns += work > 1.0 / CONTROL_FREQ
+                if version != self._last_sent_version:
+                    latency = completed_at - requested_at
+                    self._max_goal_latency = max(self._max_goal_latency, latency)
+                    self._last_sent_version = version
+                    if latency > MAX_CONTROL_GAP_SECONDS:
+                        raise MotorFault(
+                            f"goal application delayed by {latency * 1000:.1f} ms"
+                        )
+                if work > MAX_CONTROL_GAP_SECONDS:
+                    raise MotorFault(f"motor I/O stalled for {work * 1000:.1f} ms")
+                with self._lock:
+                    if version == self._command_version:
+                        self._motion_complete = self._planned_complete
                 ticks += 1
                 if now - window_t0 >= 1:
                     self._actual_freq = ticks / (now - window_t0)
@@ -204,6 +239,36 @@ class Tracker:
             self._stop_event.set()
             self._disable()
 
+    def _next_reference(self, now):
+        with self._lock:
+            q, dq, ddq = self._planner.step(now, self._command)
+            self._reference = {a: (q[i], dq[i], ddq[i]) for i, a in enumerate(AXES)}
+            self._applied_version = self._command_version
+            self._planned_complete = self._planner.finished
+            return dict(self._reference), self._applied_version, self._requested_at
+
+    def _set_command(self, command):
+        """Caller holds _lock. Replace the pending destination; never queue old frames."""
+        self._command = command
+        self._command_version += 1
+        self._requested_at = time.monotonic()
+        self._motion_complete = False
+
+    def motion_complete(self):
+        with self._lock:
+            return (
+                self._motion_complete and self._applied_version == self._command_version
+            )
+
+    def wait_until_complete(self, timeout=MOTION_FINISH_TIMEOUT_SECONDS):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.assert_healthy()
+            if self.motion_complete():
+                return True
+            time.sleep(0.01)
+        return False
+
     def health(self):
         now = time.monotonic()
         detail = {a: m.snapshot() for a, m in self._motor.items()}
@@ -216,6 +281,15 @@ class Tracker:
                     raise MotorFault("control thread is not running")
             except MotorFault as error:
                 fault = str(error)
+        with self._lock:
+            motion = self._planner.metrics() if self._planner else {}
+            motion.update(
+                max_tick_gap_ms=self._max_tick_gap * 1000,
+                max_cycle_work_ms=self._max_cycle_work * 1000,
+                max_goal_latency_ms=self._max_goal_latency * 1000,
+                cycles_over_2ms=self._cycle_overruns,
+                reference=dict(getattr(self, "_reference", {})),
+            )
         return {
             "ok": not fault,
             "fault": fault,
@@ -223,6 +297,7 @@ class Tracker:
                 a: None if s is None else now - s[0] for a, s in detail.items()
             },
             "status": {a: None if s is None else s[4] for a, s in detail.items()},
+            "motion": motion,
         }
 
     def assert_healthy(self):
@@ -243,11 +318,11 @@ class Tracker:
             err_y = 0.0
         steps = {"yaw": err_x * RAD_PER_PIXEL_X, "pitch": err_y * RAD_PER_PIXEL_Y}
         with self._lock:
-            self._ramp = None
             # Even at zero image error replace the previous goal with current feedback.
             for axis in AXES:
                 step = max(-MAX_STEP_RAD, min(MAX_STEP_RAD, steps[axis]))
                 self._target[axis] = clamp_angle(axis, self._current[axis][0] + step)
+            self._set_command(MotionCommand(tuple(self._target[a] for a in AXES)))
             self._update_count += 1
             now = time.monotonic()
             if now - self._update_window_t0 >= 1:
@@ -259,8 +334,8 @@ class Tracker:
     def hold(self):
         self.assert_healthy()
         with self._lock:
-            self._ramp = None
             self._target = {a: self._current[a][0] for a in AXES}
+            self._set_command(MotionCommand(None))
 
     def go_to(self, yaw_rad=0.0, pitch_rad=0.0, duration=GO_CENTER_DURATION):
         self.assert_healthy()
@@ -271,15 +346,9 @@ class Tracker:
             "pitch": clamp_angle("pitch", pitch_rad),
         }
         with self._lock:
-            if duration == 0:
-                self._target, self._ramp = goal, None
-            else:
-                self._ramp = dict(
-                    t0=time.monotonic(),
-                    duration=duration,
-                    start={a: self._current[a][0] for a in AXES},
-                    goal=goal,
-                )
+            self._target = goal
+            # Zero duration means fastest bounded motion, never a position jump.
+            self._set_command(MotionCommand(tuple(goal[a] for a in AXES), duration))
 
     def go_center(self):
         self.go_to()
