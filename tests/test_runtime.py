@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from animal.runtime import RuntimeGuard
 from animal.wildlife import Phase
-from test_scenario import make_service, start_warning
+from tests.test_scenario import make_service, start_warning
 
 
 class RuntimeTests(unittest.TestCase):

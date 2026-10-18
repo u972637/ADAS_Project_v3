@@ -25,14 +25,18 @@ CAMERA_TIMEOUT_SECONDS = 2.0
 PERCEPTION_TIMEOUT_SECONDS = 2.0
 MAX_RESULT_AGE_SECONDS = 1.0
 
-# Provisional exit heuristic. Evaluate only while the motor goal is frozen.
+# Provisional exit heuristic, ported from feat/escape-and-height (32882c1).
+# Evaluate only while frozen; unchanged height rejects width-only shrinkage.
+DISTANCE_METRIC = "and"  # area AND height; alternatives: "area", "height"
 AREA_RATIO_THRESHOLD = 0.50
-AREA_BASELINE_SECONDS = 1.0
-AREA_SMOOTH_SECONDS = 0.5
-AREA_HOLD_SECONDS = 1.0
+HEIGHT_RATIO_THRESHOLD = 0.80
+AREA_BASELINE_SECONDS = 0.4
+AREA_SMOOTH_SECONDS = 0.35
+AREA_HOLD_SECONDS = 0.5
 EDGE_MARGIN_PX = 2
 TORSO_WINDOW_SIZE = 5
-TORSO_SPEED_THRESHOLD = 0.15  # widths/frame; preserves the existing FPS dependence.
+TORSO_SPEED_THRESHOLD = 0.10  # widths per nominal frame = 2.5 widths/second
+TORSO_NOMINAL_FPS = 25.0  # Reference unit, NOT the measured inference FPS.
 
 AIM_AVERAGE_FRAMES = 3
 AIM_DEADBAND_FRACTION = 0.003

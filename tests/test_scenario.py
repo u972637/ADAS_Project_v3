@@ -150,13 +150,13 @@ class ScenarioTests(unittest.TestCase):
     def test_rapid_exit_stops_sound_and_never_aims_or_plays_on_exit_frame(self):
         s = start_warning(make_service())
         count = len(s.camera.aims)
-        event = feed(s, 0.5, detections(shift=110))
+        event = feed(s, 0.5, detections(shift=200))
         self.assertIn("rapid_movement_detected", event.reason)
         self.assertEqual(s.phase, Phase.SEARCH)
         self.assertEqual(s.player.state.state, "stopped")
         self.assertEqual(len(s.camera.aims), count)
         self.assertEqual(len(s.player.requests), 1)
-        feed(s, 0.6, detections(shift=110))
+        feed(s, 0.6, detections(shift=200))
         self.assertIsNone(s.escape_tracker.target_id)
 
     def test_moving_camera_during_aim_does_not_trigger_escape(self):

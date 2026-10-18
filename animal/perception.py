@@ -226,8 +226,19 @@ def torso_matches(
     return matches
 
 
+DISTANCE_METRICS = ("and", "area", "height")
+
+
 class AreaMonitor:
-    """Tracks one locked target's bbox-area trend to detect it backing away.
+    """Tracks one locked target's bbox size trend to detect it backing away.
+
+    Area and height share the baseline, smoothing window, validity rule and
+    hold timer; ``distance_metric`` decides which ratios must be at or below
+    their thresholds:
+      "and"    area AND height (rejects width-only shrinkage when a turn
+               preserves height; posture and occlusion still need evaluation)
+      "area"   area only (the original offline script)
+      "height" height only
 
     Times are in the same unit the caller passes as ``timestamp`` (seconds,
     any monotonically increasing clock). Invalid/missing samples reset
@@ -243,20 +254,37 @@ class AreaMonitor:
         hold_seconds: float,
         ratio_threshold: float,
         edge_margin_px: float,
+        height_ratio_threshold: float = 1.0,
+        distance_metric: str = "area",
     ) -> None:
+        if distance_metric not in DISTANCE_METRICS:
+            raise ValueError(f"distance_metric must be one of {DISTANCE_METRICS}")
         self.baseline_seconds = baseline_seconds
         self.smooth_seconds = smooth_seconds
         self.hold_seconds = hold_seconds
         self.ratio_threshold = ratio_threshold
+        self.height_ratio_threshold = height_ratio_threshold
+        self.distance_metric = distance_metric
         self.edge_margin_px = edge_margin_px
-        self.baseline: float | None = None
-        self.baseline_samples: list[tuple[float, float]] = []
-        self.samples: deque[tuple[float, float]] = deque()
-        self.smoothed: float | None = None
-        self.ratio: float | None = None
+        self.baseline: float | None = None  # area
+        self.baseline_height: float | None = None
+        self.baseline_samples: list[tuple[float, float, float]] = []
+        self.samples: deque[tuple[float, float, float]] = deque()
+        self.smoothed: float | None = None  # area
+        self.ratio: float | None = None  # area
+        self.height_ratio: float | None = None
         self.below_since: float | None = None
         self.below_seconds = 0.0
         self.valid = False
+
+    def _shrunk(self) -> bool:
+        area_ok = self.ratio <= self.ratio_threshold
+        height_ok = self.height_ratio <= self.height_ratio_threshold
+        if self.distance_metric == "area":
+            return area_ok
+        if self.distance_metric == "height":
+            return height_ok
+        return area_ok and height_ok
 
     def update(
         self, timestamp: float, animal: Detection | None, width: int, height: int
@@ -270,21 +298,24 @@ class AreaMonitor:
             and animal.xyxy[2] < width - self.edge_margin_px
             and animal.xyxy[3] < height - self.edge_margin_px
         )
-        self.smoothed = self.ratio = None
+        self.smoothed = self.ratio = self.height_ratio = None
         if not self.valid:
             self.samples.clear()
             self.baseline_samples.clear()
             self.below_since = None
             self.below_seconds = 0.0
             return False
-        area = animal.area
+        sample = (timestamp, animal.area, animal.height)
         if self.baseline is None:
-            self.baseline_samples.append((timestamp, area))
+            self.baseline_samples.append(sample)
             if timestamp - self.baseline_samples[0][0] + 1e-9 >= self.baseline_seconds:
-                self.baseline = float(median(a for _, a in self.baseline_samples))
+                self.baseline = float(median(s[1] for s in self.baseline_samples))
+                self.baseline_height = float(
+                    median(s[2] for s in self.baseline_samples)
+                )
                 self.baseline_samples.clear()
             return False
-        self.samples.append((timestamp, area))
+        self.samples.append(sample)
         # Retain one sample at/before the window boundary to cover its duration.
         while (
             len(self.samples) > 1
@@ -293,9 +324,12 @@ class AreaMonitor:
             self.samples.popleft()
         if timestamp - self.samples[0][0] + 1e-9 < self.smooth_seconds:
             return False
-        self.smoothed = float(median(a for _, a in self.samples))
+        self.smoothed = float(median(s[1] for s in self.samples))
         self.ratio = self.smoothed / self.baseline
-        if self.ratio <= self.ratio_threshold:
+        self.height_ratio = (
+            float(median(s[2] for s in self.samples)) / self.baseline_height
+        )
+        if self._shrunk():
             if self.below_since is None:
                 self.below_since = timestamp
             self.below_seconds = timestamp - self.below_since
@@ -333,7 +367,7 @@ class EscapeTracker:
 
     Picks the largest eligible animal (track ID required) when no target is
     locked. While locked, feeds the target's bbox into an AreaMonitor (bbox
-    area shrinking = backing away) and tracks its matched torso's movement
+    area/height shrinking = provisional backing away) and tracks its matched torso's movement
     over a short window (fast movement = fleeing). Either condition firing
     releases the lock and starts a short grace period before a new target
     can be picked, mirroring the original offline analysis script
@@ -353,6 +387,9 @@ class EscapeTracker:
         edge_margin_px: float,
         torso_window_size: int,
         torso_speed_threshold: float,
+        height_ratio_threshold: float = 1.0,
+        distance_metric: str = "area",
+        nominal_fps: float = 25.0,
     ) -> None:
         if track_lost_seconds <= 0:
             raise ValueError("track_lost_seconds must be > 0")
@@ -360,6 +397,9 @@ class EscapeTracker:
             raise ValueError("torso_window_size must be >= 2")
         if torso_speed_threshold <= 0:
             raise ValueError("torso_speed_threshold must be > 0")
+        if not math.isfinite(nominal_fps) or nominal_fps <= 0:
+            raise ValueError("nominal_fps must be finite and > 0")
+        self.nominal_fps = nominal_fps
         self.track_lost_seconds = track_lost_seconds
         self.reselect_grace_seconds = reselect_grace_seconds
         self.torso_window_size = torso_window_size
@@ -369,6 +409,8 @@ class EscapeTracker:
             smooth_seconds=area_smooth_seconds,
             hold_seconds=area_hold_seconds,
             ratio_threshold=area_ratio_threshold,
+            height_ratio_threshold=height_ratio_threshold,
+            distance_metric=distance_metric,
             edge_margin_px=edge_margin_px,
         )
 
@@ -376,7 +418,7 @@ class EscapeTracker:
         self.target_class: int | None = None
         self._lost_since: float | None = None  # 타겟이 안 보이기 시작한 시각
         self._area_monitor = AreaMonitor(**self._area_kwargs)
-        self._history: deque[tuple[int, float, float, float]] = deque(
+        self._history: deque[tuple[int, float, float, float, float]] = deque(
             maxlen=torso_window_size
         )
         # 해제된 ID -> 마지막으로 보였던(= 계속 보이는 중이면 매 프레임 갱신)
@@ -484,17 +526,20 @@ class EscapeTracker:
             if self._history and self._history[-1][0] != self._frame_number - 1:
                 self._history.clear()
             cx, cy = matched_torso.center
-            self._history.append((self._frame_number, cx, cy, selected.width))
+            self._history.append(
+                (self._frame_number, timestamp, cx, cy, selected.width)
+            )
             if len(self._history) == self.torso_window_size:
                 first, last = self._history[0], self._history[-1]
                 mean_width = (
-                    sum(item[3] for item in self._history) / self.torso_window_size
+                    sum(item[4] for item in self._history) / self.torso_window_size
                 )
-                if mean_width > 0:
-                    speed = math.hypot(last[1] - first[1], last[2] - first[2]) / (
-                        (self.torso_window_size - 1) * mean_width
+                elapsed_frames = (last[1] - first[1]) * self.nominal_fps
+                if mean_width > 0 and elapsed_frames > 0:
+                    speed = math.hypot(last[2] - first[2], last[3] - first[3]) / (
+                        elapsed_frames * mean_width
                     )
-                    rapid_movement = speed >= self.torso_speed_threshold
+                    rapid_movement = speed * (1 + 1e-9) >= self.torso_speed_threshold
             state = (
                 STATE_ACTIVE
                 if self._area_monitor.baseline is not None
