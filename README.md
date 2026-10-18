@@ -85,6 +85,8 @@ animal/                        main.py 가 쓰는 모듈 (main.py 자신만 빼�
 assets/models/weights.pt       동물 탐지 YOLO 가중치
 assets/audio/                  멧돼지·고라니 WAV (<동물>/*.wav 를 그대로 읽음)
 assets/audio_eq/               위 WAV에 1.5~2kHz 강조 EQ를 씌운 버전 (tools/eq_filter.py 가 생성)
+assets/audio_pitch/            위 WAV의 음높이를 1.5~2kHz 쪽으로 올린 버전 (tools/pitch_shift.py 가 생성)
+assets/audio_pitch_eq/         음높이를 올린 뒤 EQ까지 씌운 버전 (tools/pitch_shift.py 가 생성)
 
 people/
   main_facetrack.py             얼굴 추적 실행 진입점 (구 main.py)
@@ -109,6 +111,7 @@ tools/                         공용 — 점검 도구
   zero_actuator.py                영점 설정
   play_audio.py                   클래스별 음성 재생만 확인 (야생동물용)
   eq_filter.py                    퇴치 음원 1.5~2kHz 강조 EQ 생성 + 원본/EQ 비교 재생
+  pitch_shift.py                  퇴치 음원 음높이를 1.5~2kHz 쪽으로 올림 (+EQ 버전) + 비교 재생
 
 audio_test/                    스피커 음향 측정 데이터 시트 (CSV)
 ```
@@ -163,7 +166,7 @@ uv run main.py
 | `ENABLE_MOTOR` | `False` | `True`면 모터로 실제 조준 |
 | `HEADLESS` | `False` | `True`면 화면 없이 실행(Ctrl+C로 종료) |
 | `AUDIO_PLAYER_COMMAND` | 자동(`aplay`/`afplay`) | WAV 재생 명령 override |
-| `USE_EQ_AUDIO` | `False` | `True`면 원본 대신 1.5~2kHz 강조 EQ 음원(`assets/audio_eq/`) 재생 — 아래 참고 |
+| `AUDIO_VARIANT` | `"original"` | 재생할 음원 버전 — `"original"`(원본), `"eq"`, `"pitch"`, `"pitch_eq"` (아래 참고) |
 
 실행 중 키: `q`=종료, `e`=모터 중앙 복귀.
 
@@ -199,7 +202,35 @@ uv run python tools/eq_filter.py --compare boar_07  # 원본 → 1초 → EQ 연
 - EQ는 이미 있는 소리의 크기만 바꾸므로, 원본에 1.5~2kHz 성분이 거의 없는
   클립(예: `boar_07` 0.1% → 1.3%)은 강조 효과가 약하다 — 생성 시 출력되는
   "1.5~2kHz 비중" 열로 클립별 효과를 확인할 것.
-- 실제 재생에 쓰려면 `animal/settings.py`의 `USE_EQ_AUDIO = True`.
+- 실제 재생에 쓰려면 `animal/settings.py`의 `AUDIO_VARIANT = "eq"`.
+
+### 음원 피치 시프트 (1.5~2kHz 쪽으로 음높이 올리기)
+
+위 EQ는 원래 있는 1.5~2kHz 소리의 크기만 바꿀 수 있는데, 원본 음원은
+에너지가 대부분 550~1000Hz에 몰려 있어서 효과가 약했다. 그래서 소리 전체의
+음높이를 올려 그 에너지 자체를 1.5~2kHz로 옮긴 버전도 만든다.
+
+```bash
+uv run python tools/pitch_shift.py                    # 생성 + 클립별 올린 양·비중 표
+uv run python tools/pitch_shift.py --compare boar_07  # 원본 → pitch → pitch+EQ 연속 재생
+```
+
+| 버전 (`AUDIO_VARIANT`) | 폴더 | 1.5~2kHz 비중 (서로 다른 16개 클립 중앙값 / 최저) |
+| --- | --- | --- |
+| `"original"` | `assets/audio/` | 1.7% / 0.1% |
+| `"eq"` | `assets/audio_eq/` | 15.6% / 1.3% |
+| `"pitch"` | `assets/audio_pitch/` | 27.4% / 16.2% |
+| `"pitch_eq"` | `assets/audio_pitch_eq/` | 65.2% / 40.5% |
+
+- 클립마다 0~12반음(`MAX_SEMITONES`, 1옥타브)을 0.5반음 간격으로 실제로
+  올려 보고 1.5~2kHz 비중이 가장 큰 값을 고른다(이번 결과 +3~+12반음).
+  클립마다 에너지가 몰린 위치가 달라서 전부 같은 만큼 올리면 오히려 대역을
+  벗어나는 클립이 생긴다.
+- 길이·리듬은 그대로 두고 음높이만 올린다(phase vocoder). 많이 올릴수록 작은
+  개·장난감 소리처럼 변하고, 짖는 소리의 시작이 약간 뭉개질 수 있다 —
+  퇴치음으로서 위협감이 남는지는 직접 들어보고 판단할 것.
+- 크기 맞추기·최대값 제한·원본에서 빠진 파일 정리는 EQ와 동일하고,
+  `pitch_eq`의 EQ는 `tools/eq_filter.py` 설정을 그대로 쓴다.
 
 > 실제 동물 회피 효과, 카메라·모터·스피커 통합 야외 동작은 아직 검증 전이다.
 

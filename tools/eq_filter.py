@@ -23,11 +23,14 @@ EQ = 주파수별 볼륨 조절. 스피커 지향성이 잘 나타나는 1.5~2kH
 - EQ 는 이미 있는 소리의 크기만 바꾼다 — 원본에 1.5~2kHz 성분이 거의 없는
   클립은 강조 효과가 약하다. 생성 후 출력되는 표의 "대역 비중"으로 확인.
 
-입력: animal/settings.py 의 ORIGINAL_AUDIO_DIR (assets/audio/<동물>/*.wav)
-출력: EQ_AUDIO_DIR (assets/audio_eq/<동물>/*.wav) — 같은 폴더 구조·파일 이름.
-      다시 실행하면 같은 결과로 덮어쓰고, 원본에서 빠진 클립의 EQ 파일은
-      지운다(재생은 폴더 안 WAV 를 전부 쓰므로 남아 있으면 안 됨).
-재생에 쓰려면 animal/settings.py 의 USE_EQ_AUDIO = True.
+입력: animal/settings.py 의 AUDIO_VARIANT_DIRS["original"] (assets/audio/<동물>/*.wav)
+출력: AUDIO_VARIANT_DIRS["eq"] (assets/audio_eq/<동물>/*.wav) — 같은 폴더
+      구조·파일 이름. 다시 실행하면 같은 결과로 덮어쓰고, 원본에서 빠진
+      클립의 EQ 파일은 지운다(재생은 폴더 안 WAV 를 전부 쓰므로 남아 있으면
+      안 됨).
+재생에 쓰려면 animal/settings.py 의 AUDIO_VARIANT = "eq".
+(피치를 1.5~2kHz 쪽으로 올리는 버전은 tools/pitch_shift.py — 여기 함수들을
+ 그대로 가져다 쓴다.)
 
 실행:
   uv run python tools/eq_filter.py                    # 20개 생성 + 비교표 출력
@@ -134,39 +137,71 @@ def band_share(samples: np.ndarray, sample_rate: int) -> float:
     return float(power[in_band].sum() / power.sum())
 
 
+def match_level(reference: np.ndarray, processed: np.ndarray) -> tuple[np.ndarray, bool]:
+    """processed 의 RMS 를 reference(원본)와 맞춘 결과, 그리고 피크 제한이
+    걸렸는지 — 최대값이 TARGET_PEAK_DBFS 를 넘으면 그만큼 낮춘다."""
+    processed_peak = float(np.abs(processed).max())
+    if processed_peak == 0:
+        return processed, False
+    gain = rms(reference) / rms(processed)
+    peak_limit = PCM16_MAX * 10 ** (TARGET_PEAK_DBFS / 20)
+    limited = processed_peak * gain > peak_limit
+    if limited:
+        gain = peak_limit / processed_peak
+    return processed * gain, limited
+
+
 def apply_eq(samples: np.ndarray, taps: np.ndarray) -> tuple[np.ndarray, bool]:
     """EQ 를 걸고 RMS 를 원본과 맞춘 결과, 그리고 피크 제한이 걸렸는지."""
     # 홀수 길이 대칭 FIR 에 mode="same" 이면 지연(NUMTAPS//2 샘플)이 잘려나가
     # 원본과 길이·타이밍이 같다.
-    filtered = signal.fftconvolve(samples, taps, mode="same")
-    filtered_peak = float(np.abs(filtered).max())
-    if filtered_peak == 0:
-        return filtered, False
-    gain = rms(samples) / rms(filtered)
-    peak_limit = PCM16_MAX * 10 ** (TARGET_PEAK_DBFS / 20)
-    limited = filtered_peak * gain > peak_limit
-    if limited:
-        gain = peak_limit / filtered_peak
-    return filtered * gain, limited
+    return match_level(samples, signal.fftconvolve(samples, taps, mode="same"))
 
 
 def source_clips() -> list[Path]:
     """원본 폴더의 <동물>/*.wav — 재생 쪽(AudioCatalog.from_directory)과 같은 규칙."""
-    return sorted(settings.ORIGINAL_AUDIO_DIR.glob("*/*.wav"))
+    return sorted(settings.AUDIO_VARIANT_DIRS["original"].glob("*/*.wav"))
 
 
-def generate() -> None:
-    source, target = settings.ORIGINAL_AUDIO_DIR, settings.EQ_AUDIO_DIR
-    clips = source_clips()
-    if not clips:
-        raise SystemExit(f"[ERROR] 원본 음원이 없음: {source}/<동물>/*.wav")
-    print(f"[EQ] {EQ_DESCRIPTION}")
-
+def remove_stale(target: Path, clips: list[Path]) -> None:
+    """원본에서 빠진 클립의 생성물을 지운다 — 재생은 폴더 안 WAV 를 전부 쓴다."""
+    source = settings.AUDIO_VARIANT_DIRS["original"]
     stale = ({path.relative_to(target) for path in target.glob("*/*.wav")}
              - {path.relative_to(source) for path in clips})
     for relative in sorted(stale):
         (target / relative).unlink()
-        print(f"[삭제] 원본에 없는 EQ 음원: {target / relative}")
+        print(f"[삭제] 원본에 없는 생성 음원: {target / relative}")
+
+
+def find_source_clip(name: str) -> Path:
+    stem = Path(name).stem
+    matches = [path for path in source_clips() if path.stem == stem]
+    if not matches:
+        raise SystemExit(f"[ERROR] 클립을 찾을 수 없음: {name} (예: boar_07, water_deer_03)")
+    return matches[0]
+
+
+def play_in_order(labeled_paths: list[tuple[str, Path]]) -> None:
+    """(이름, 파일) 순서대로 COMPARE_GAP_SECONDS 씩 쉬며 재생."""
+    for label, path in labeled_paths:
+        if not path.is_file():
+            raise SystemExit(f"[ERROR] 음원이 없음: {path} — 먼저 인자 없이 실행해 생성하세요.")
+    command = settings.AUDIO_PLAYER_COMMAND or (
+        "afplay" if platform.system() == "Darwin" else "aplay")
+    for index, (label, path) in enumerate(labeled_paths):
+        if index:
+            time.sleep(COMPARE_GAP_SECONDS)
+        print(f"[재생] {label}: {path}")
+        subprocess.run([command, str(path)], check=True)
+
+
+def generate() -> None:
+    source, target = settings.AUDIO_VARIANT_DIRS["original"], settings.AUDIO_VARIANT_DIRS["eq"]
+    clips = source_clips()
+    if not clips:
+        raise SystemExit(f"[ERROR] 원본 음원이 없음: {source}/<동물>/*.wav")
+    print(f"[EQ] {EQ_DESCRIPTION}")
+    remove_stale(target, clips)
 
     taps_by_rate: dict[int, np.ndarray] = {}
     for index, path in enumerate(clips):
@@ -190,22 +225,10 @@ def generate() -> None:
 
 
 def compare(name: str) -> None:
-    stem = Path(name).stem
-    matches = [path for path in source_clips() if path.stem == stem]
-    if not matches:
-        raise SystemExit(f"[ERROR] 클립을 찾을 수 없음: {name} (예: boar_07, water_deer_03)")
-    original = matches[0]
-    equalized = settings.EQ_AUDIO_DIR / original.relative_to(settings.ORIGINAL_AUDIO_DIR)
-    if not equalized.is_file():
-        raise SystemExit(f"[ERROR] EQ 음원이 없음: {equalized} — 먼저 인자 없이 실행해 생성하세요.")
-
-    command = settings.AUDIO_PLAYER_COMMAND or (
-        "afplay" if platform.system() == "Darwin" else "aplay")
-    print(f"[재생] 원본: {original}")
-    subprocess.run([command, str(original)], check=True)
-    time.sleep(COMPARE_GAP_SECONDS)
-    print(f"[재생] EQ  : {equalized}")
-    subprocess.run([command, str(equalized)], check=True)
+    original = find_source_clip(name)
+    relative = original.relative_to(settings.AUDIO_VARIANT_DIRS["original"])
+    play_in_order([("원본", original),
+                   ("EQ  ", settings.AUDIO_VARIANT_DIRS["eq"] / relative)])
 
 
 def main() -> None:
