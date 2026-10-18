@@ -64,16 +64,27 @@ TRACK_LOST_SECONDS = 2.0        # 이 시간(초) 동안 lock된 ID가 안 보�
                                  # lock 해제 — 테스트 메뉴에서는 r 을 누른 것과 동일)
 RESELECT_GRACE_SECONDS = 1.0    # 도주로 lock 해제된 뒤 새 타겟을 고르기까지 대기(초)
 
-# 조건 1: bbox 면적이 기준치보다 많이 줄면(= 뒤로 물러나는 것으로 추정) 도주로 판단
-AREA_RATIO_THRESHOLD = 0.50     # 기준 면적 대비 이 비율 이하로 줄면
-AREA_BASELINE_SECONDS = 1.0     # 새로 lock된 뒤 기준 면적을 모으는 시간(초)
-AREA_SMOOTH_SECONDS = 0.5       # 면적 스무딩(중앙값) 윈도우(초)
-AREA_HOLD_SECONDS = 1.0         # 비율이 이 시간(초) 이상 유지돼야 확정
+# 값은 3D 시뮬레이션 튜닝(무작위 상황 540개) 결과 — 기존 값은 주석의 "원본".
+#
+# 조건 1: bbox 크기가 기준치보다 많이 줄면(= 뒤로 물러나는 것으로 추정) 도주로 판단
+#   면적만 보면 몸을 돌리기만 해도(옆모습 -> 앞·뒷모습) 면적이 절반 이하로 줄어
+#   잘못 종료된다(시뮬레이션에서 돌아다니기의 최대 27%). bbox 높이는 몸을 돌려도
+#   거의 그대로라서, 면적 AND 높이가 둘 다 줄어야 도주로 본다.
+DISTANCE_METRIC = "and"         # "and"(면적·높이 둘 다) | "area"(원본) | "height"
+AREA_RATIO_THRESHOLD = 0.50     # 기준 면적 대비 이 비율 이하 (같은 방향이면 거리 약 1.41배)
+HEIGHT_RATIO_THRESHOLD = 0.80   # 기준 높이 대비 이 비율 이하 (거리 약 1.25배)
+AREA_BASELINE_SECONDS = 0.4     # 새로 lock된 뒤 기준 크기를 모으는 시간(초) (원본 1.0)
+AREA_SMOOTH_SECONDS = 0.35      # 크기 스무딩(중앙값) 윈도우(초) (원본 0.5)
+AREA_HOLD_SECONDS = 0.5         # 조건이 이 시간(초) 이상 유지돼야 확정 (원본 1.0)
 EDGE_MARGIN_PX = 2              # 화면 가장자리에 걸친(잘린) bbox는 샘플에서 제외
 
 # 조건 2: torso 중심의 급속 이동(박스 너비로 정규화)도 도주로 판단
+#   속도 = 이동 거리 / (경과 프레임 수 x 평균 박스 너비). 경과 프레임 수는 실제
+#   경과 시간 x TORSO_NOMINAL_FPS 로 계산해서, 처리 속도가 25fps보다 느려져도
+#   같은 실제 속도 기준이 유지된다(25fps에서는 원본과 동일).
 TORSO_WINDOW_SIZE = 5
-TORSO_SPEED_THRESHOLD = 0.15
+TORSO_SPEED_THRESHOLD = 0.10    # 25fps 기준 프레임당 박스 너비의 0.10배 = 초당 2.5배 (원본 0.15)
+TORSO_NOMINAL_FPS = 25.0
 
 # ──────────────────────────────────────────────
 # 사람 대역(person proxy) 테스트 — start.sh 2번
