@@ -29,6 +29,8 @@ RAW_TAU_FF = {"yaw": TAU_FF_YAW, "pitch": TAU_FF_PITCH}
 CONTROL_FREQ = 500
 MAX_STEP_RAD = 0.6
 DEADZONE_PX = 8.0
+# Shared operating default pose, in logical coordinates (not encoder zero).
+# stop/normal exit call Tracker.go_default(); change the pose here only.
 DEFAULT_YAW_DEG, DEFAULT_PITCH_DEG = 0.0, 30.0
 GO_CENTER_DURATION = 2.0
 # J4310 V1.0 docs list faults 0x8..0xE but do not define the normal-state nibble.

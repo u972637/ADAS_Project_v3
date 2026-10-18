@@ -2,7 +2,8 @@
 
 작성 기준: **2026-10-18 (KST)**. main의 `9eaa148`에 통합 시나리오를 구현하고,
 `feat/escape-and-height`의 `32882c1`을 병합한 상태를 설명한다.
-동물·사람 대역 운영 코드는 `animal/`이다. 이전 보행자 안내 앱과 오프라인 분석
+정식 야생동물 코어는 `animal/`, 사람 대역 실험 어댑터는 `tools/person_proxy.py`이다.
+이전 보행자 안내 앱과 오프라인 분석
 원본은 별도 앱/참고 자료이며 아래 상태 머신을 실행하지 않는다.
 
 ## 1. 팀별 역할과 데이터 흐름
@@ -32,13 +33,27 @@ flowchart TB
 | 역할 | 기준 파일 | 출력/책임 |
 | --- | --- | --- |
 | 영상 | `animal/camera.py` | 최신 프레임·캡처 시각, YUY2 공통 변환 |
-| 인식/개체 연결 | `animal/inference.py`, `animal/person_proxy.py` | 종별 ID와 raw torso/pose torso |
+| 인식/개체 연결 | `animal/inference.py` | 종별 ID와 raw torso |
+| 사람 대역 실험 | `tools/person_proxy.py` | 실험 메뉴에서만 pose torso를 공급 |
 | 대상·이탈 판정 | `animal/perception.py` | 선택한 동물, 연결 torso, 종료 사유 |
 | 전환 결정 | `animal/wildlife.py` | 조준/고정/재생/재탐색/사용자 정지 |
 | 조준 필터 | `animal/aiming.py` | 평균 좌표와 수렴 여부 |
 | 모터 | `motor/dm4310_tracker.py`, `motor/config.py` | 논리 좌표 변환, PD 목표 유지, 실측 피드백 |
 | 음향 | `animal/audio.py`, `animal/settings.py` | 단계별 음원 선택, 재생·중지·완료 |
-| 공통 진입점 | `animal/runtime.py` | main.py와 메뉴 1/2가 같은 운영 루프 사용 |
+| 정식 진입점 / 공통 실행 루프 | `main.py` / `animal/runtime.py` | main 단독으로 전체 운용. 실험 메뉴가 공통 루프를 재사용 |
+
+### 정식 운용과 실험의 경계
+
+- `uv run python main.py`: 모터 기본 ON, 야생동물 탐색부터 전체 시나리오 시작.
+- `uv run python main.py --start-paused`: 같은 기능을 W/resume 대기부터 시작.
+- `./start.sh`: 선택적인 실험 메뉴. 1/2는 정식 코어의 동물/사람 대역 통합 시험,
+  3/4/5는 기존 손들기·수동·음향 측정 도구다.
+- main과 start는 서로 실행하지 않는다. 의존 방향은 **실험 도구 → 공통 코어**뿐이다.
+  정식 코드는 `tools/`를 불러오지 않고, 사람 모델·합성 torso 설정도 실험 쪽에 있다.
+- 수렴 판정은 이번 통합에서 추가했다. 중앙 ±1.5%·3샘플·0.5초 유지 조건은 유지하며,
+  두 축 속도 절댓값 문턱을 각각 **0.05 → 0.2 rad/s**로 완화했다.
+- stop은 `Tracker.go_default()`를 호출한다. 기존 공통 default는 논리 Yaw 0°/Pitch +30°이며,
+  변경 시 `motor/config.py`의 `DEFAULT_YAW_DEG`, `DEFAULT_PITCH_DEG`만 조정한다.
 
 ## 2. 실제 상태 머신
 
@@ -180,7 +195,8 @@ uv run python -m unittest tests.test_escape_tracker -v
 bash -n start.sh tools/actuator_test.sh
 ```
 
-- 합성·장치 대역 회귀 테스트 총 **56개**: 기존 통합 48개 + 새 도주 관련 8개.
+- 합성·장치 대역 회귀 테스트 총 **61개**: 기존 통합 48개 + 새 도주 관련 8개
+  + 정식 진입점/수렴 속도/기본 자세 관련 5개.
 - 실제 설치된 ByteTrack으로 종/torso ID 분리와 낮은 신뢰도 torso 보존 검증.
 - 재생 프로세스 실패·중단, 모터 초기 피드백 없음·CAN 예외, 입력 타임아웃,
   정지 고정, YUY2 변환 등 검증. 이 진단 상태들은 위 시각화에서 생략했다.

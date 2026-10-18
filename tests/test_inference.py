@@ -73,6 +73,8 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual([t.frame_id for t in tracker.trackers.values()], [4, 4])
 
     def test_person_proxy_uses_raw_keypoint_alignment(self):
+        from tools.person_proxy import infer_person_detections
+
         points = np.zeros((2, 17, 3), dtype=np.float32)
         for i, cx in enumerate((80, 220)):
             for k, (dx, dy) in zip(
@@ -88,7 +90,7 @@ class InferenceTests(unittest.TestCase):
             torso_confidence=0.5,
             torso_class_id=-1,
         )
-        _, ds = infer_detections(Model(raw), service, None, person_proxy=True)
+        _, ds = infer_person_detections(Model(raw), service, None)
         self.assertEqual(
             [d.center for d in ds if d.class_id == -1], [(80, 105), (220, 105)]
         )

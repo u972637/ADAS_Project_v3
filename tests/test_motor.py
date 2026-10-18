@@ -118,6 +118,16 @@ class MotorTests(unittest.TestCase):
         t.go_default()
         self.assertAlmostEqual(t._ramp["goal"]["pitch"], math.radians(30))
 
+    def test_default_return_uses_configured_pose_not_hardcoded_angles(self):
+        t = self.tracker()
+        with (
+            patch.object(module, "DEFAULT_YAW_DEG", 5),
+            patch.object(module, "DEFAULT_PITCH_DEG", 20),
+        ):
+            t.go_default()
+        self.assertAlmostEqual(t._ramp["goal"]["yaw"], math.radians(5))
+        self.assertAlmostEqual(t._ramp["goal"]["pitch"], math.radians(20))
+
     def test_mode_not_confirmed_fails_startup(self):
         with patch.object(Control, "mode", False):
             with self.assertRaisesRegex(MotorFault, "MIT mode"):

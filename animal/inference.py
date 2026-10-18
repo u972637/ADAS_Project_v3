@@ -46,7 +46,7 @@ class AnimalIdentityTracker:
         return size, tuple(tracked), raw
 
 
-def infer_detections(model, service, frame, *, person_proxy=False):
+def infer_detections(model, service, frame, *, torso_reader=None):
     conf = min(service.min_selection_confidence, service.torso_confidence)
     results = model.predict(frame, conf=conf, verbose=False)
     if len(results) != 1:
@@ -57,15 +57,10 @@ def infer_detections(model, service, frame, *, person_proxy=False):
             service.class_map, service.tracker_config
         )
     size, animals, raw = service.identity_tracker.update(result)
-    if person_proxy:
-        from animal.person_proxy import read_person_detections
-
-        _, pose_detections = read_person_detections(result)
-        torsos = [d for d in pose_detections if d.class_id == service.torso_class_id]
-    else:
-        torsos = [
-            replace(d, track_id=None)
-            for d in raw
-            if d.class_id == service.torso_class_id
-        ]
+    if torso_reader is not None:
+        # Experiments can supply synthetic torsos without production importing them.
+        _, raw = torso_reader(result)
+    torsos = [
+        replace(d, track_id=None) for d in raw if d.class_id == service.torso_class_id
+    ]
     return size, (*animals, *torsos)

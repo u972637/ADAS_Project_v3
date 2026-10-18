@@ -1,7 +1,7 @@
 import os
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 from animal.runtime import RuntimeGuard
@@ -62,17 +62,83 @@ class RuntimeTests(unittest.TestCase):
 
 
 class EntrypointTests(unittest.TestCase):
-    def test_main_and_menu_use_same_runtime(self):
-        import main
-        import animal.runtime
+    def test_experiments_reuse_core_with_separate_person_adapter(self):
         from tools.motor_manual_control import run_wildlife_track
 
-        self.assertIs(main.run, animal.runtime.run)
         with patch("animal.runtime.run") as run:
+            run_wildlife_track()
+        run.assert_called_once_with(enable_motor=True, start_paused=True)
+        with patch("tools.person_proxy.run_person_test") as run_person:
             run_wildlife_track(person_proxy=True)
-        run.assert_called_once_with(
-            person_proxy=True, enable_motor=True, start_paused=True
-        )
+        run_person.assert_called_once_with()
+
+    def run_main(self, *args):
+        """One real runtime iteration, substituting physical I/O and YOLO only."""
+        import main
+        from animal.wildlife import WildlifeDeterrent
+        from tests.test_scenario import detections
+
+        created = []
+        factory = WildlifeDeterrent.from_settings
+
+        def make_service(**kwargs):
+            service = factory(**kwargs)
+            created.append(service)
+            return service
+
+        now = time.monotonic()
+        with (
+            patch("ultralytics.YOLO") as model,
+            patch("animal.camera.open_camera", return_value=Mock()),
+            patch("animal.camera.CameraCapture") as capture,
+            patch("motor.dm4310_tracker.Tracker") as tracker,
+            patch("motor.config.GO_CENTER_DURATION", 0),
+            patch("animal.runtime.RuntimeGuard") as guard,
+            patch(
+                "animal.wildlife.WildlifeDeterrent.from_settings",
+                side_effect=make_service,
+            ),
+            patch(
+                "animal.inference.infer_detections",
+                return_value=((1000, 1000), detections()),
+            ) as infer,
+            patch("builtins.print"),
+        ):
+            model.return_value.names = {0: "boar", 1: "deer", 2: "torso"}
+            capture.return_value.read_new.return_value = (True, object(), 1, now)
+            guard.return_value.quit.is_set.side_effect = [False, True]
+            tracker.return_value.health.return_value = {"ok": True, "fault": None}
+            main.main(["--headless", *args])
+            infer.assert_called_once()
+            capture.return_value.release.assert_called_once()
+            return created[0], tracker
+
+    def test_main_alone_enables_motor_and_complete_scenario(self):
+        from animal.audio import WavPlayer
+
+        service, tracker = self.run_main()
+        tracker.assert_called_once_with()
+        tracker.return_value.go_default.assert_called_once()
+        tracker.return_value.close.assert_called_once()
+        self.assertEqual(service._confirmation_count, 0)  # Cleared by final stop.
+        self.assertIsInstance(service.player, WavPlayer)
+        # A production frame was consumed before final cleanup.
+        self.assertIsNotNone(service._last_result_at)
+
+    def test_main_start_paused_does_not_consume_detection_for_aiming(self):
+        service, tracker = self.run_main("--start-paused")
+        tracker.assert_called_once_with()
+        tracker.return_value.update.assert_not_called()
+        self.assertIsNone(service._last_result_at)
+
+    def test_main_dry_run_disables_real_motor_and_audio(self):
+        from animal.audio import DryRunPlayer
+        from animal.aiming import SimulatedCameraController
+
+        service, tracker = self.run_main("--dry-run")
+        tracker.assert_not_called()
+        self.assertIsInstance(service.camera, SimulatedCameraController)
+        self.assertIsInstance(service.player, DryRunPlayer)
 
     def test_menu_exit_without_selection_never_opens_motor(self):
         from tools import motor_manual_control as menu

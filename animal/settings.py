@@ -5,7 +5,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_PATH = PROJECT_ROOT / "assets/models/weights.pt"
 CAMERA_INDEX = 4
-ENABLE_MOTOR = False
+ENABLE_MOTOR = True  # Production main.py runs detection, control and audio together.
+START_PAUSED = False  # main.py --start-paused enables W/resume gating when needed.
 DRY_RUN = False
 HEADLESS = False
 AUDIO_PLAYER_COMMAND = None
@@ -42,7 +43,7 @@ AIM_AVERAGE_FRAMES = 3
 AIM_DEADBAND_FRACTION = 0.003
 AIM_MAX_JUMP_FRACTION = 0.15  # normalized image distance; isolated jumps rejected
 AIM_TOLERANCE_FRACTION = 0.015  # each axis, fraction of full frame
-AIM_MAX_VELOCITY_RAD_S = 0.05
+AIM_MAX_VELOCITY_RAD_S = 0.2
 AIM_SETTLE_SECONDS = 0.5
 WARNING_OBSERVATION_SECONDS = 5.0  # Starts after successful warning playback completes.
 
@@ -64,8 +65,3 @@ WARNING_AUDIO_VARIANT_DIRS = {
     "eq": PROJECT_ROOT / "assets/warnings_eq",
 }
 WARNING_AUDIO_DIR = WARNING_AUDIO_VARIANT_DIRS[WARNING_AUDIO_VARIANT]
-
-PERSON_MODEL_PATH = PROJECT_ROOT / "assets/models/yolov8n-pose.pt"
-PERSON_CLASS_TO_AUDIO = {0: "boar"}
-PERSON_EXPECTED_MODEL_NAMES = {0: "person"}
-PERSON_KEYPOINT_CONFIDENCE = 0.5

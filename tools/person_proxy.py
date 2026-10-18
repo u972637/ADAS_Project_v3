@@ -14,6 +14,11 @@ from animal import settings
 from animal.wildlife import WildlifeDeterrent
 from animal.perception import Detection, _plain, read_detections
 
+PERSON_MODEL_PATH = settings.PROJECT_ROOT / "assets/models/yolov8n-pose.pt"
+PERSON_CLASS_TO_AUDIO = {0: "boar"}
+PERSON_EXPECTED_MODEL_NAMES = {0: "person"}
+PERSON_KEYPOINT_CONFIDENCE = 0.5
+
 # 모델이 내는 클래스가 아니라 키포인트로 만든 합성 클래스 — 실제 모델 클래스
 # ID 와 절대 겹치지 않도록 음수를 쓴다.
 TORSO_CLASS_ID = -1
@@ -64,25 +69,27 @@ def read_person_detections(
 
 def person_deterrent_from_settings(**kwargs) -> WildlifeDeterrent:
     return WildlifeDeterrent.from_settings(
-        class_map=settings.PERSON_CLASS_TO_AUDIO,
-        expected_names=settings.PERSON_EXPECTED_MODEL_NAMES,
+        class_map=PERSON_CLASS_TO_AUDIO,
+        expected_names=PERSON_EXPECTED_MODEL_NAMES,
         torso_class_id=TORSO_CLASS_ID,
-        torso_confidence=settings.PERSON_KEYPOINT_CONFIDENCE,
+        torso_confidence=PERSON_KEYPOINT_CONFIDENCE,
         **kwargs,
     )
 
 
-def process_person_frame(
-    model, service, frame, captured_at, *, now=None, generation=None
-):
-    import time
+def infer_person_detections(model, service, frame):
     from animal.inference import infer_detections
 
-    size, detections = infer_detections(model, service, frame, person_proxy=True)
-    return service.process_detections(
-        size,
-        detections,
-        captured_at,
-        now=time.monotonic() if now is None else now,
-        generation=generation,
+    return infer_detections(model, service, frame, torso_reader=read_person_detections)
+
+
+def run_person_test():
+    from animal.runtime import run_session
+
+    return run_session(
+        model_path=PERSON_MODEL_PATH,
+        service_factory=person_deterrent_from_settings,
+        inference=infer_person_detections,
+        enable_motor=True,
+        start_paused=True,
     )

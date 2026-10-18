@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Shared-rig menu. 1/2 use animal.runtime; 3 retains the legacy hand-raise demo.
+"""Optional experiment menu; production main.py does not depend on this file.
+1/2 rehearse the shared pipeline; 3 retains the legacy hand-raise demo.
 4/5 use the same Tracker, logical right/up +, limits and 500 Hz loop as runtime.
 """
 
@@ -124,7 +125,7 @@ def _bow_tracker(tracker: Tracker, duration: float = BOW_DURATION):
 
 
 # ──────────────────────────────────────────────
-# 터미널 raw 키 입력 (main.py 와 동일한 방식)
+# 실험 메뉴의 터미널 raw 키 입력 (정식 main은 Enter로 명령을 제출)
 # ──────────────────────────────────────────────
 
 def setup_terminal_keyboard():
@@ -282,8 +283,12 @@ def run_audio_test_pose(mc: ManualController):
 # ──────────────────────────────────────────────
 
 def run_wildlife_track(person_proxy=False):
-    from animal.runtime import run
-    run(person_proxy=person_proxy, enable_motor=True, start_paused=True)
+    if person_proxy:
+        from tools.person_proxy import run_person_test
+        run_person_test()
+    else:
+        from animal.runtime import run
+        run(enable_motor=True, start_paused=True)
 
 
 
@@ -471,10 +476,10 @@ def run_auto_track():
 
 def print_menu():
     print("\n======================================")
-    print(" Yaw/Pitch 수동 제어")
+    print(" 실험 메뉴 (정식 운용: python main.py)")
     print("======================================")
-    print(" 1. 동물 추적 + 종별 음향 재생 (멧돼지/고라니 탐지)")
-    print(" 2. 사람을 동물로 간주해 추적 (1번 알고리즘 + YOLO 사람 모델)")
+    print(" 1. 동물 모델 통합 실험 (조준·음향 포함, W로 시작)")
+    print(" 2. 사람 대역 통합 실험 (pose 모델, W로 시작)")
     print(" 3. YOLO 코 좌표 추적 (손들기로 시작, 인식모드 진입 시 안내음)")
     print(" 4. 방향키로 위치 제어 (모터 각도 직접 조그)")
     print(" 5. 음향테스트용 위치 고정 (yaw=0°, pitch=0°)")

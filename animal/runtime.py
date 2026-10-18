@@ -1,4 +1,7 @@
-"""Shared live runner for main.py and start.sh menus 1/2."""
+"""Production wildlife runner and reusable live-session infrastructure.
+
+Experiment launchers may call this module; this module never imports them.
+"""
 
 from __future__ import annotations
 
@@ -62,40 +65,62 @@ class RuntimeGuard:
         self._thread.join(timeout=2)
 
 
-def run(*, person_proxy=False, enable_motor=None, start_paused=False, headless=None):
+def run(*, enable_motor=None, start_paused=None, headless=None, dry_run=None):
+    """Run the complete production task, independently of start.sh and tools/."""
+    from animal.inference import infer_detections
+
+    return run_session(
+        model_path=settings.MODEL_PATH,
+        service_factory=WildlifeDeterrent.from_settings,
+        inference=infer_detections,
+        enable_motor=enable_motor,
+        start_paused=start_paused,
+        headless=headless,
+        dry_run=dry_run,
+    )
+
+
+def run_session(
+    *,
+    model_path,
+    service_factory,
+    inference,
+    enable_motor=None,
+    start_paused=None,
+    headless=None,
+    dry_run=None,
+):
+    """Shared camera, motor, input and cleanup loop with caller-supplied perception."""
     import cv2
     from ultralytics import YOLO
     from animal.camera import CameraCapture, open_camera
     from animal.aiming import TrackerCameraController, SimulatedCameraController
-    from animal.inference import infer_detections
-    from animal.person_proxy import person_deterrent_from_settings
     from motor.config import FRAME_W, FRAME_H, GO_CENTER_DURATION
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
     enable_motor = settings.ENABLE_MOTOR if enable_motor is None else enable_motor
+    start_paused = settings.START_PAUSED if start_paused is None else start_paused
     headless = settings.HEADLESS if headless is None else headless
-    model_path = settings.PERSON_MODEL_PATH if person_proxy else settings.MODEL_PATH
+    dry_run = settings.DRY_RUN if dry_run is None else dry_run
     if not model_path.is_file():
         raise FileNotFoundError(model_path)
     model = YOLO(str(model_path))
-    make_service = (
-        person_deterrent_from_settings
-        if person_proxy
-        else WildlifeDeterrent.from_settings
-    )
     with ExitStack() as stack:
         tracker = None
-        adapter = SimulatedCameraController() if settings.DRY_RUN else None
-        service = make_service(camera=adapter)
+        adapter = SimulatedCameraController() if dry_run else None
+        service = service_factory(camera=adapter, dry_run=dry_run)
         validate_model_classes(
             model.names,
             service.class_map,
             service.expected_names,
-            torso_class_id=None if person_proxy else service.torso_class_id,
+            # Negative IDs denote caller-generated boxes, absent from model.names.
+            torso_class_id=(
+                service.torso_class_id if service.torso_class_id >= 0 else None
+            ),
         )
-        if enable_motor and not settings.DRY_RUN:
+        if enable_motor and not dry_run:
             from motor.dm4310_tracker import Tracker
 
             tracker = Tracker()
@@ -119,7 +144,8 @@ def run(*, person_proxy=False, enable_motor=None, start_paused=False, headless=N
             "Terminal: stop / resume / quit + Enter. Window: R/E/Space stop, W resume, Q exit."
         )
         print(
-            f"dry_run={settings.DRY_RUN}, motor={tracker is not None}, warning_assets={settings.WARNING_AUDIO_DIR}"
+            f"dry_run={dry_run}, motor={tracker is not None}, start_paused={start_paused}, "
+            f"warning_assets={settings.WARNING_AUDIO_DIR}"
         )
         last_sequence = 0
         last_report = None
@@ -131,9 +157,7 @@ def run(*, person_proxy=False, enable_motor=None, start_paused=False, headless=N
                 if ready:
                     generation = service.generation
                     started = time.monotonic()
-                    size, detections = infer_detections(
-                        model, service, frame, person_proxy=person_proxy
-                    )
+                    size, detections = inference(model, service, frame)
                     event = service.process_detections(
                         size,
                         detections,
@@ -142,7 +166,8 @@ def run(*, person_proxy=False, enable_motor=None, start_paused=False, headless=N
                         generation=generation,
                     )
                     if not headless:
-                        display = frame.copy()  # Capture + inference + control all use unmirrored coordinates.
+                        # Capture, inference and control share unmirrored coordinates.
+                        display = frame.copy()
                         for detection in detections:
                             color = (
                                 (0, 180, 255)

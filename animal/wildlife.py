@@ -97,13 +97,15 @@ class WildlifeDeterrent:
         expected_names=None,
         torso_class_id=None,
         torso_confidence=None,
+        dry_run=None,
     ):
         class_map = dict(settings.CLASS_TO_AUDIO if class_map is None else class_map)
         if player is None:
             command = settings.AUDIO_PLAYER_COMMAND or (
                 "afplay" if platform.system() == "Darwin" else "aplay"
             )
-            player = DryRunPlayer() if settings.DRY_RUN else WavPlayer(command)
+            dry_run = settings.DRY_RUN if dry_run is None else dry_run
+            player = DryRunPlayer() if dry_run else WavPlayer(command)
         warning_catalogs = {}
         for label in set(class_map.values()):
             folder = settings.WARNING_AUDIO_DIR / label
@@ -118,9 +120,11 @@ class WildlifeDeterrent:
                 )
         return cls(
             class_map=class_map,
-            expected_names=settings.EXPECTED_MODEL_NAMES
-            if expected_names is None
-            else expected_names,
+            expected_names=(
+                settings.EXPECTED_MODEL_NAMES
+                if expected_names is None
+                else expected_names
+            ),
             catalog=AudioCatalog.from_directory(
                 settings.AUDIO_DIR,
                 set(class_map.values()),
@@ -143,12 +147,14 @@ class WildlifeDeterrent:
                 torso_window_size=settings.TORSO_WINDOW_SIZE,
                 torso_speed_threshold=settings.TORSO_SPEED_THRESHOLD,
             ),
-            torso_class_id=settings.TORSO_CLASS_ID
-            if torso_class_id is None
-            else torso_class_id,
-            torso_confidence=settings.TORSO_TRACK_CONFIDENCE
-            if torso_confidence is None
-            else torso_confidence,
+            torso_class_id=(
+                settings.TORSO_CLASS_ID if torso_class_id is None else torso_class_id
+            ),
+            torso_confidence=(
+                settings.TORSO_TRACK_CONFIDENCE
+                if torso_confidence is None
+                else torso_confidence
+            ),
         )
 
     @property
