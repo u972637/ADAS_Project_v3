@@ -5,6 +5,9 @@ from __future__ import annotations
 import random
 import shutil
 import subprocess
+import tempfile
+import time
+from dataclasses import dataclass
 import wave
 from pathlib import Path
 
@@ -62,44 +65,96 @@ class AudioCatalog:
         return selected
 
 
+@dataclass(frozen=True)
+class PlaybackStatus:
+    state: str  # idle, playing, completed, failed, stopped
+    file: Path | None = None
+    returncode: int | None = None
+    error: str | None = None
+
+
 class WavPlayer:
     def __init__(self, command: str) -> None:
         if shutil.which(command) is None:
             raise FileNotFoundError(f"WAV player command not found: {command}")
         self.command = command
-        self._process: subprocess.Popen[bytes] | None = None
+        self._process = None
+        self._stderr = None
+        self._status = PlaybackStatus("idle")
 
     def play(self, file: Path) -> None:
         if self.is_playing():
             raise RuntimeError("audio is already playing")
-        self._process = subprocess.Popen(
-            [self.command, str(file)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        self._stderr = tempfile.TemporaryFile()
+        try:
+            self._process = subprocess.Popen(
+                [self.command, str(file)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=self._stderr,
+            )
+            self._status = PlaybackStatus("playing", file)
+        except Exception as error:
+            self._stderr.close()
+            self._stderr = None
+            self._status = PlaybackStatus("failed", file, error=str(error))
+            raise
+
+    def status(self) -> PlaybackStatus:
+        if self._process is not None and self._status.state == "playing":
+            code = self._process.poll()
+            if code is not None:
+                self._stderr.seek(0)
+                error = self._stderr.read(4096).decode(errors="replace").strip()
+                self._stderr.close()
+                self._stderr = None
+                self._status = PlaybackStatus(
+                    "completed" if code == 0 else "failed",
+                    self._status.file,
+                    code,
+                    error or None,
+                )
+                self._process = None
+        return self._status
 
     def is_playing(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        return self.status().state == "playing"
 
     def stop(self) -> None:
         if self.is_playing():
-            assert self._process is not None
             self._process.terminate()
             try:
-                self._process.wait(timeout=1)
+                self._process.wait(timeout=0.3)
             except subprocess.TimeoutExpired:
                 self._process.kill()
-                self._process.wait(timeout=1)
-        self._process = None
+                self._process.wait(timeout=0.3)
+            self._stderr.close()
+            self._stderr = self._process = None
+            self._status = PlaybackStatus("stopped", self._status.file)
 
 
 class DryRunPlayer:
+    """Silent simulation retains WAV duration so the observation timing is real."""
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self._status = PlaybackStatus("idle")
+        self._ends_at = 0.0
+
     def play(self, file: Path) -> None:
-        pass
+        with wave.open(str(file), "rb") as reader:
+            duration = reader.getnframes() / reader.getframerate()
+        self._ends_at = self.clock() + duration
+        self._status = PlaybackStatus("playing", file)
+
+    def status(self) -> PlaybackStatus:
+        if self._status.state == "playing" and self.clock() >= self._ends_at:
+            self._status = PlaybackStatus("completed", self._status.file, 0)
+        return self._status
 
     def is_playing(self) -> bool:
-        return False
+        return self.status().state == "playing"
 
     def stop(self) -> None:
-        pass
+        if self._status.state == "playing":
+            self._status = PlaybackStatus("stopped", self._status.file)

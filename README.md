@@ -1,184 +1,158 @@
 # ADAS Project
 
-**같은 Damiao DM-J4310-2EC 2축(Yaw/Pitch) CAN 짐벌 + Arducam B0538C 카메라**
-하드웨어를 공유하는 애플리케이션 두 개를 담은 저장소.
+기존 보행자 안내 시스템의 **카메라·2축 짐벌·지향성 음향**을 야생동물 퇴치에
+적용한 프로젝트다. 동물 검출, 조준, 음향 단계 전환의 기준 구현은
+`animal/runtime.py`와 `animal/wildlife.py`이다.
 
-| 앱 | 진입점 | 하는 일 |
-| --- | --- | --- |
-| 야생동물 음향 퇴치 | `main.py` | 멧돼지·고라니 탐지 → bbox 중심으로 짐벌 조준 → 종에 맞는 WAV 재생 |
-| 얼굴 추적 | `people/main_facetrack.py` | 손 든 사람 확정 → 코 좌표로 짐벌 추적 → 상황별 안내 음성 |
+이 통합 변경의 기준은 원격 main 커밋 `9eaa148`(2026-10-18)이다.
+최근 실기 코드의 500 Hz, Kp 30/Kd 1.8, 유효 화각 28°/20°를 유지했다.
+과거 1000 Hz 주석이나 다른 테스트 도구의 게인보다 실제 최신 코드를 기준으로 삼았다.
 
-모터(`motor/`)와 테스트 도구(`start.sh`가 메인, `tools/actuator_test.sh`는
-저수준 점검용)는 두 앱이 공유한다.
-
-## 빠른 시작
-
-**하드웨어가 제대로 동작하는지 가장 먼저 확인하는 방법은 `start.sh`다.**
+## 실행
 
 ```bash
-uv sync          # 최초 1회
-./start.sh       # 카메라+모터 통합 테스트 메뉴
-```
-
-메뉴에서 1(동물 추적)이나 3(YOLO 코 좌표 추적)을 선택하면 카메라·YOLO·모터가
-전부 실제 운영 코드와 동일한 경로로 동작하는 걸 바로 볼 수 있다. `main.py`나
-`people/main_facetrack.py`를 직접 실행하기 전에 `start.sh`로 먼저 확인하는 걸
-추천한다. 자세한 메뉴 설명은 [테스트 도구](#테스트-도구) 참고.
-
-## 목차
-
-- [빠른 시작](#빠른-시작)
-- [Setup](#setup)
-- [구성](#구성)
-- [야생동물 탐지 — `main.py`](#야생동물-탐지--mainpy)
-- [얼굴 추적 — `people/main_facetrack.py`](#얼굴-추적--peoplemain_facetrackpy)
-- [공용 모터 — `motor/dm4310_tracker.py`](#공용-모터--motordm4310_trackerpy)
-- [테스트 도구](#테스트-도구)
-- [음향 테스트 데이터 — `audio_test/`](#음향-테스트-데이터--audio_test)
-- [튜닝 중인 값 / 알아둘 것](#튜닝-중인-값--알아둘-것)
-
-## Setup
-
-**다른 PC에 새로 설치할 때**: `uv`만 설치돼 있으면 된다(파이썬 3.10 자체도
-`uv`가 `requires-python`(`pyproject.toml`)에 맞춰 알아서 받아 쓰므로, 시스템에
-파이썬 3.10을 미리 깔아둘 필요 없음).
-
-```bash
-# uv 설치 (최초 1회, 이미 있으면 생략)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 의존성 설치 — pyproject.toml/uv.lock 에 고정된 버전 그대로 재현됨
 uv sync
+uv run python main.py
+./start.sh
 ```
 
-`uv sync`로 안 잡히는 **OS 레벨 의존성**은 다음 하나뿐: 야생동물 쪽
-`animal/audio.py`의 WAV 재생이 쓰는 `aplay`(Linux, alsa-utils) —
-대부분의 Linux 배포판에 기본 설치돼 있다. (MP3 안내 음성은 `pygame`이
-의존성에 포함돼 있어 별도 설치 없이 재생된다.)
+Python 3.10, Ultralytics 8.4.72 등 의존성은 `pyproject.toml`/`uv.lock` 기준이다.
+Linux WAV 재생에는 `aplay`(alsa-utils), macOS에는 `afplay`가 필요하다.
 
-하드웨어 준비 체크리스트:
-
-| 항목 | 확인된 값 |
+| 진입점 | 동작 |
 | --- | --- |
-| 카메라 | Arducam B0538C(OG05B1B), 인덱스 **4** = `/dev/video4`. USB 3.0 연결 시 2592×1944@25fps(USB 2.0은 5fps로 급감) |
-| CAN 동글 | Damiao 전용 USB-CAN, 이 프로젝트 기준 `/dev/ttyACM0` (동글 칩셋에 따라 `/dev/ttyUSB0`일 수도 있음 — `ls /dev/ttyUSB* /dev/ttyACM*`로 재확인) |
-| CAN ID | Yaw=`0x01`, Pitch=`0x02` (MasterID `0x11`/`0x12`) — `./tools/actuator_test.sh` 1번(스캔)으로 확인/변경 가능 |
-| MIT 모드 | `Tracker` 초기화 시 자동 전환, 별도 사전 설정 불필요 |
+| `main.py` | 공통 야생동물 시나리오. 모터 기본 OFF |
+| `start.sh` 메뉴 1 | 같은 런타임 + 실제 모터. W를 누르기 전에는 조준·재생 대기 |
+| 메뉴 2 | 같은 시나리오를 사람 pose로 시험. 어깨·골반 4점으로 torso 생성 |
+| 메뉴 3 | 이전 손들기·코 추적 데모 |
+| 메뉴 4/5 | 공통 Tracker를 사용하는 수동 조그 / 음압 측정용 자세 유지 |
+| `people/main_facetrack.py` | 기존 보행자 안내 앱 |
 
-카메라 인덱스를 바꾸려면 야생동물 쪽은 `animal/settings.py`의 `CAMERA_INDEX`,
-얼굴추적 쪽은 `people/main_facetrack.py`의 `CAMERA_IDX`. 게인·가동범위 등
-튜닝값은 [튜닝 중인 값 / 알아둘 것](#튜닝-중인-값--알아둘-것) 참고.
+야생동물 경로와 사람 대역 경로 모두 **반전 없는 동일 영상 좌표계**를 사용한다.
+메뉴 1/2의 키·음향·카메라·제어 루프를 별도로 복제하지 않는다.
 
-## 구성
+| `animal/settings.py` | 기본값 / 의미 |
+| --- | --- |
+| `CAMERA_INDEX` | 4. Arducam B0538C, 요청 해상도 2592×1944, YUY2, 25 FPS |
+| `ENABLE_MOTOR` | False. main.py에서 True로 바꿔 실제 조준. 메뉴 1/2는 모터 사용 |
+| `DRY_RUN` | False. True면 공통 런타임에서 CAN·실제 음향 없이 조준/재생 시간을 모의 실행 |
+| `HEADLESS` | False. True면 터미널 명령 사용 |
+| `WARNING_OBSERVATION_SECONDS` | 5.0. 경계음 정상 종료를 확인한 뒤 관찰할 시간 |
+| `AUDIO_VARIANT` | 기존 위협음 original / eq / pitch / pitch_eq |
+| `WARNING_AUDIO_VARIANT` | 별도 경계음 original / eq |
 
-```
-main.py                        야생동물 탐지+음향퇴치 실행 진입점
-start.sh                       모터+카메라 통합 테스트 메뉴 (메인, 5개 항목)
+`ENABLE_MOTOR=False`, `DRY_RUN=False`이면 검출은 가능하지만 조준 수렴을
+확인할 수 없으므로 자동 재생하지 않는다. DRY_RUN도 없는 경계음을 생성하거나
+위협음으로 대체하지 않는다. 모의 조준은 영상 속 torso가 중앙에 들어와야 수렴한다.
+DRY_RUN은 메뉴 1/2와 main.py의 공통 런타임 설정이며 기존 메뉴 3/4/5에는 적용하지 않는다.
 
-animal/                        main.py 가 쓰는 모듈 (main.py 자신만 빼고 전부 이 안에)
-  settings.py                    모델·카메라·모터·음향 설정 상수
-  camera.py                      Arducam YUY2 캡처, 최신 프레임 전달, 재연결
-  wildlife.py                    YOLO 결과·대상 선택·종 분류·재생 정책·모터 어댑터
-  person_proxy.py                사람을 동물처럼 넣는 어댑터 (start.sh 2번, 키포인트 torso)
-  audio.py                       WAV 목록 검증·무작위 선택·재생
-  mp3_player.py                  MP3 재생기 (pygame) — people/, tools/ 도 같이 씀
-assets/models/weights.pt       동물 탐지 YOLO 가중치
-assets/audio/                  멧돼지·고라니 WAV (<동물>/*.wav 를 그대로 읽음)
-assets/audio_eq/               위 WAV에 1.5~2kHz 강조 EQ를 씌운 버전 (tools/eq_filter.py 가 생성)
-assets/audio_pitch/            위 WAV의 음높이를 1.5~2kHz 쪽으로 올린 버전 (tools/pitch_shift.py 가 생성)
-assets/audio_pitch_eq/         음높이를 올린 뒤 EQ까지 씌운 버전 (tools/pitch_shift.py 가 생성)
+## 시나리오와 역할
 
-people/
-  main_facetrack.py             얼굴 추적 실행 진입점 (구 main.py)
-detection/
-  base.py                        PoseDetector 인터페이스, PersonPose 데이터 구조
-  yolo_pose.py                   YOLOv8 pose 기반 PoseDetector 구현체
-assets/models/yolov8n-pose.pt  YOLOv8 pose 가중치 (동물 탐지와 별개)
-assets/models/yolov8n.pt       YOLOv8 일반 탐지 가중치 (현재 코드에서 안 씀)
-assets/voice/                  얼굴추적 상황별 안내 음성 (mp3)
-legacy/                        이전 세대 코드 (Dynamixel 트래커, 라즈베리파이 스트림 서버 — 참고용)
-
-motor/                         공용 — 모터/CAN
-  dm4310_tracker.py              Damiao DM-J4310-2EC 트래커 (Tracker 클래스)
-  DM_CAN.py                      Damiao 저수준 CAN 드라이버 (벤더링)
-
-tools/                         공용 — 점검 도구
-  actuator_test.sh                액추에이터 단독 점검 메뉴 (저수준, 8개 항목)
-  actuator_conn_test.py           액추에이터 1개 연결/신호조회/위치신호/제로잉
-  camera_test.py                  카메라 단독 테스트
-  motor_goto.py                   지정 좌표로 이동 후 유지 (독립 실행)
-  motor_manual_control.py         start.sh 가 실행하는 실제 구현
-  zero_actuator.py                영점 설정
-  play_audio.py                   클래스별 음성 재생만 확인 (야생동물용)
-  eq_filter.py                    퇴치 음원 1.5~2kHz 강조 EQ 생성 + 원본/EQ 비교 재생
-  pitch_shift.py                  퇴치 음원 음높이를 1.5~2kHz 쪽으로 올림 (+EQ 버전) + 비교 재생
-
-audio_test/                    스피커 음향 측정 데이터 시트 (CSV)
+```mermaid
+stateDiagram-v2
+    [*] --> Search
+    Search --> AimWarning: 같은 개체·종 3프레임 확인
+    AimWarning --> FrozenWarning: torso 중앙 수렴
+    FrozenWarning --> Warning: 정지 상태의 기준 면적 확보 + 경계음 파일 있음
+    Warning --> ObserveWarning: 정상 재생 완료
+    ObserveWarning --> AimThreat: 5초 후에도 대상 유지
+    AimThreat --> FrozenThreat: torso 다시 조준·수렴
+    FrozenThreat --> Threat: 기준 면적 재확보
+    Threat --> ObserveThreat: 정상 재생 완료
+    ObserveThreat --> Search: 임시 이탈 / 추적 유실
+    Warning --> Search: 임시 이탈 / 추적 유실
+    ObserveWarning --> Search: 임시 이탈 / 추적 유실
+    Threat --> Search: 임시 이탈 / 추적 유실
 ```
 
-## 야생동물 탐지 — `main.py`
+- **검출/연결 — `animal/inference.py`, `animal/perception.py`**: raw `predict()` 결과에서
+  멧돼지·고라니를 각각 별도 ByteTrack으로 추적한다. `(종, 내부 ID)`를 세션 ID로
+  변환하므로 종 사이의 ID 재사용을 막는다. torso는 ByteTrack에 넣지 않고
+  포함관계와 거리 기반 일대일 매칭으로 연결한다. 신뢰도 0.2 torso도 유지한다.
+- **시나리오 — `animal/wildlife.py`**: 대상 확정, 조준/관찰 구분, 이탈·유실 종료,
+  경계음→위협음 전환을 한 곳에서 결정한다. 종료 이벤트를 먼저 처리하므로
+  이탈 프레임에서 다시 조준하거나 새 음향을 시작하지 않는다.
+- **조준 — `animal/aiming.py`**: torso 중심 3프레임 평균, 작은 중앙 오차의 deadband,
+  고립된 큰 좌표 점프 거부를 담당한다. 큰 이동이 2프레임 연속 확인되면 새 위치를
+  받아들인다. torso 미검출 시 전체 동물 중심으로 바꾸지 않고 마지막 목표를 유지한다.
+- **모터 — `motor/dm4310_tracker.py`**: 실측 위치에 영상 오차로 계산한 각도 보정을
+  더하고, 500 Hz 목표로 CAN MIT 명령을 전송한다. 조준 수렴 후 목표 각도를 고정해도
+  PD 유지 제어는 계속된다. 재생·관찰 중 검출 위치를 따라 새 목표를 만들지 않는다.
+- **음향 — `animal/audio.py`**: 종별 음원 선택, 프로세스 시작/완료/실패/중단 상태와
+  오류 출력을 담당한다. 프로세스 시작을 성공적인 재생 완료로 간주하지 않는다.
 
-```text
-카메라 → model.track(ByteTrack) → EscapeTracker(타겟 ID 고정) ┬→ torso 중심 → DM4310 조준 (ENABLE_MOTOR)
-                                                           └→ YOLO 클래스 → 재생 정책 → 무작위 WAV
-```
+조준 수렴은 raw/평균 torso 중심이 화면 각 축의 중앙 ±1.5% 안에 있고,
+두 축 속도가 0.05 rad/s 이하인 상태를 0.5초 유지한 경우다. 3개 샘플이 먼저
+필요하고 미검출/이상치는 수렴 타이머를 끊는다. 모두 `animal/settings.py`에서 조정한다.
+고정 직후 1초 동안 유효한 bbox 면적 기준을 모으므로 실제 음향은 그 뒤에 시작한다.
+화면 가장자리로 잘린 bbox만 계속 나오면 기준 확보 단계에서 기다린다.
 
-기본 가중치는 `assets/models/weights.pt`. 모델을 바꾸려면 `animal/settings.py`의
-`MODEL_PATH`를 수정하고, `CLASS_TO_AUDIO`(클래스ID→음원 그룹)와
-`EXPECTED_MODEL_NAMES`(해당 ID의 실제 모델 이름)를 실제 모델에 맞게 고친다 —
-안 맞으면 카메라·모터를 열기 전에 실행이 중단된다. 현재 로컬 모델 기준:
+위협음은 한 번 재생한 뒤 **같은 자세에서 관찰을 유지**한다. 추가 반복 재생이나
+무제한 재조준 정책은 넣지 않았다. 이탈·유실·사용자 정지로 현재 시도가 종료된다.
 
-| 클래스 ID | 모델 이름 | 음원 그룹 |
-| --- | --- | --- |
-| 0 | `boar` | `boar` (멧돼지) |
-| 1 | `deer` | `water_deer` (고라니) |
-| 2 | `torso` | 재생 대상 아님 — 조준 기준점으로만 씀(아래 참고) |
+### 임시 이탈 조건과 미검출
 
-### 타겟 고정 추적 (`EscapeTracker`)
+사용자 지정에 따라 기존 면적 감소·급속 이동 조건을 유지한다. **모터를 고정한
+단계에서만** 검사하고, 조준 중 샘플은 버린다. 재조준 뒤에는 기준과 이동 이력을 다시 만든다.
 
-매 프레임 신뢰도 최고 탐지를 그때그때 쫓는 대신, `model.track()`(ByteTrack)으로
-**개체별 ID를 유지**하면서 한 마리를 lock해 계속 쫓는다(새 탐지 중 bbox가 가장
-큰 개체를 고름). 모터는 그 개체의 **bbox 전체가 아니라 torso(몸통) 중심**을
-조준한다(다리·꼬리처럼 멀리 뻗은 부위 때문에 흔들리는 걸 피함).
+| 조건 | 처리 |
+| --- | --- |
+| bbox 면적이 기준의 50% 이하로 1초 유지 | 임시 이탈: 음향 중지, 현재 목표 유지, 재탐색 |
+| torso의 5프레임 이동량이 0.15 bbox-width/frame 이상 | 같은 임시 이탈 처리 |
+| 동물 bbox가 잠시 미검출 | 마지막 모터 목표 유지. 같은 ID가 돌아오면 계속 |
+| bbox 미검출이 2초 지속 | 추적 유실 확정: 음향 중지·재탐색 |
+| 카메라 영상 자체가 2초 이상 미수신 | 독립 watchdog이 음향 중지·목표 고정·재탐색 |
+| 카메라는 정상이나 유효 추론 결과가 2초 이상 없음 | 별도의 perception timeout 처리 |
+| 캡처 후 1초 이상 지난 추론 결과 | 조준에 쓰지 않고 버림 |
 
-다음 중 하나라도 걸리면 "도주"로 보고 lock을 풀고(= 더 이상 조준 안 함),
-`RESELECT_GRACE_SECONDS`(1초) 뒤 새 타겟을 다시 고른다:
-- bbox 면적이 기준치의 `AREA_RATIO_THRESHOLD`(50%) 이하로 `AREA_HOLD_SECONDS`
-  (1초) 이상 유지(= 뒤로 물러남)
-- torso 중심의 5프레임 이동 속도가 `TORSO_SPEED_THRESHOLD`(0.15, bbox
-  너비로 정규화) 이상(= 급속 이동)
+짧은 bbox 누락 동안에는 재생도 유지하다가 **2초 유실이 확정되면** 중지한다.
+이탈 ID는 계속 보이는 동안 재선정하지 않으며 2초 동안 사라진 뒤 제외를 해제한다.
+다른 대상 선택 전 유예는 1초다. 급속 이동은 기존 프레임 기준이므로 FPS 의존성이
+남아 있다. 이것은 실제 보호 구역 경계 판정이나 퇴치 성공 증거를 의미하지 않는다.
 
-**AI 탐지가 몇 프레임 누락되는 건 도주가 아니다** — lock된 타겟이
-`TRACK_LOST_SECONDS`(2초) 안에만 다시 보이면 그대로 추적을 이어간다. 그 안엔
-모터에 새 좌표를 안 보내므로(`Tracker`가 마지막 목표 각도를 계속 토크로
-유지) 제자리에서 안정적으로 버티고, 2초를 넘기면 그때 진짜로 lock을 푼다.
-관련 상수는 전부 `animal/settings.py`에 있다. (원본 로직 출처:
-`animal/animal_escape_tracking_combined.py`, 오프라인 영상 분석용으로 먼저
-작성됐던 걸 라이브 카메라 파이프라인에 맞게 옮김.)
+### 정지·복귀와 진단
+
+- 창: **R / E / Space = stop**, **W = resume**, **Q / ESC = 종료**.
+- 터미널: **`stop` / `resume` / `quit` + Enter**. 추론이 진행 중이어도 별도 감시
+  스레드가 터미널 입력을 받는다(통상 50 ms 간격, 하드 실시간 보장 없음).
+- `stop`은 추적·음향을 중지하고 현재 위치를 잡은 뒤 기본 자세
+  **Yaw 0°, Pitch +30°**로 2초 램프 복귀한다. 다음 검출은 이를 취소할 수 없다.
+  `resume` 전에는 정지 상태가 유지되고, 정지 전에 시작한 추론 결과도 폐기한다.
+- Q/ESC 종료도 기본 자세로 복귀 후 연결을 닫는다. 통신 고장 때는 복귀를 강행하지 않는다.
+- 이는 **소프트웨어 정지 후 복귀**이며 전원을 끊는 하드웨어 E-stop이 아니다.
+- 초기 MIT 모드 확인과 양 축의 실제 위치 응답이 없으면 운전을 시작하지 않는다.
+  응답이 0.5초 넘게 오래되거나, 고장 코드/통신 예외/제어 스레드 종료가 있으면 고장을
+  상위 시나리오에 전달한다. 제어 스레드는 가능한 범위에서 양 축 disable을 보낸다.
+- 음향 실패는 종료 코드·stderr를 기록하고 FAULT로 대기한다. 복구 후 `resume`으로
+  경계음부터 다시 시도한다. 종료 코드 0은 재생기 정상 종료 확인이며 실제 음압 측정은 아니다.
+
+`Tracker.health()`는 양 축의 피드백 경과 시간·원시 상태 코드를 반환한다.
+DM-J4310 V1.0 설명서는 고장 0x8~0xE만 명시하므로, 정상 상태는 펌웨어 호환을
+위해 0/1을 허용한다. 실기에서 0=disabled, 1=enabled를 확인한 경우
+`motor/config.py`의 `HEALTHY_STATUS_CODES=(1,)`로 엄격하게 설정할 수 있다.
+근거: [제조사 J4310 설명서의 피드백 정의](https://damiao.enactic.ai/en/assets/files/dm-j4310-2ec-v1.1-zh-5d089e0b013d8e2fc203c5b670008a66.pdf).
+
+## 음원
+
+현재 종 매핑: 모델 `0=boar` → `boar`, `1=deer` → `water_deer`, `2=torso` → 조준용.
+모델 이름과 매핑이 다르면 모터를 열기 전에 중단한다.
+
+| 단계 | 원본 | EQ | 상태 |
+| --- | --- | --- | --- |
+| 경계음 | `assets/warnings/<종>/*.wav` | `assets/warnings_eq/<종>/*.wav` | 아직 없음. 빈 폴더 구조만 준비 |
+| 위협음 | `assets/audio/<종>/*.wav` | `assets/audio_eq/<종>/*.wav` | 기존 각 종 10개 사용 |
+
+경계음은 선택한 버전의 각 종 폴더에 **1개 이상 유효한 WAV**를 넣고 재시작하면
+사용된다. 없으면 `missing_warning_asset` 상태로 기다리며 위협음으로 건너뛰지 않는다.
+경계음 raw/EQ는 별도로 선택한다. 기존 EQ/피치 생성 도구는 위협음 폴더를 대상으로
+하므로 새 경계음은 해당 폴더에 별도로 준비한다.
+
+카메라·모터 없이 음향만 시험:
 
 ```bash
-uv run main.py
-```
-
-| 설정 (`animal/settings.py`) | 기본값 | 의미 |
-| --- | --- | --- |
-| `DRY_RUN` | `False` | `True`면 음원 경로만 출력(소리 안 냄) — 처음 점검할 때 추천 |
-| `ENABLE_MOTOR` | `False` | `True`면 모터로 실제 조준 |
-| `HEADLESS` | `False` | `True`면 화면 없이 실행(Ctrl+C로 종료) |
-| `AUDIO_PLAYER_COMMAND` | 자동(`aplay`/`afplay`) | WAV 재생 명령 override |
-| `AUDIO_VARIANT` | `"original"` | 재생할 음원 버전 — `"original"`(원본), `"eq"`, `"pitch"`, `"pitch_eq"` (아래 참고) |
-
-실행 중 키: `q`=종료, `e`=모터 중앙 복귀.
-
-재생 규칙: 3프레임 연속 탐지 시 탐지 사건당 1회, 클래스 공통 쿨다운 10초.
-대상은 위 `EscapeTracker`가 lock한 개체 하나(여러 동물이 있어도 ID로 하나만
-계속 따라감). 음원은 `assets/audio/<음원 그룹>/*.wav`를 그대로 읽으므로
-파일을 넣고 빼기만 하면 된다(그룹당 최소 10개).
-
-모델·카메라 없이 음성만 확인:
-
-```bash
-uv run python tools/play_audio.py   # tools/play_audio.py 의 CLASS_ID로 그룹 지정
+uv run python tools/play_audio.py --stage threat --label boar
+uv run python tools/play_audio.py --stage warning --label water_deer
+uv run python tools/play_audio.py --stage threat --label boar --dry-run
 ```
 
 ### 음원 EQ (1.5~2kHz 강조)
@@ -234,6 +208,38 @@ uv run python tools/pitch_shift.py --compare boar_07  # 원본 → pitch → pit
 
 > 실제 동물 회피 효과, 카메라·모터·스피커 통합 야외 동작은 아직 검증 전이다.
 
+## 공용 좌표·기구 설정
+
+`motor/config.py`가 운용·수동 조그의 단일 설정 위치다.
+
+| 항목 | 값 |
+| --- | --- |
+| 논리 각도 | 오른쪽 Yaw + / 위쪽 Pitch + |
+| raw 모터 각도 | Yaw/Pitch 모두 논리 각도의 −1배 |
+| CAN 위치·속도·토크 피드백 | 논리 좌표로 변환해 표시 |
+| 제어 주파수 목표 | 500 Hz; 실제 달성 주파수는 별도 표시 |
+| Kp / Kd | 양 축 30 / 1.8 |
+| 유효 수평 / 수직 화각 | 28° / 20° |
+| Yaw / Pitch 범위 | ±1.2 / ±0.6 rad (수동 메뉴에도 적용) |
+| 기본 복귀 자세 | 0° / +30° |
+| raw feed-forward torque | Yaw 0 / Pitch +2.3 N·m (기존 물리 보정 유지) |
+| USB-CAN | `/dev/ttyACM0`, 921600 baud |
+| CAN ID / Master ID | Yaw 0x01 / 0x11, Pitch 0x02 / 0x12 |
+
+`Tracker.update(x,y)`는 최신 **실측 위치 + 영상 오차**로 목표를 만든다.
+검출이 정중앙인 경우도 이전 목표를 유지하지 않고 최신 실측 위치로 갱신한다.
+3프레임 평균/deadband는 야생동물 조준 어댑터에, 마지막 좌표 보유와 CAN 제어는
+모터 어댑터에 있어 판단을 중복하지 않는다.
+
+`tools/actuator_test.sh`와 `tools/actuator_conn_test.py`의 기본 Kp/Kd도 공유값을
+읽는다. 이 두 저수준 도구 및 `zero_actuator.py`는 **raw 모터 좌표·단일 모터
+벤치 시험**이다. 설치된 짐벌의 논리 각도/가동범위 적용은 Tracker 경로를 사용한다.
+단독 도구의 임의각/60° 왕복은 짐벌 운용 명령과 다르다.
+
+카메라 변환은 `animal/camera.py` 한 곳에서 처리한다. 특히 2차원 packed YUY2
+`H×(2W)`를 2채널 `H×W×2`로 복원해 변환한다. 이를 회색 영상으로 읽던 이전 메뉴
+경로는 가로 크기와 색/좌표 해석을 잘못 만들 수 있어 공통 함수로 교체했다.
+
 ## 얼굴 추적 — `people/main_facetrack.py`
 
 ```text
@@ -265,138 +271,32 @@ uv run people/main_facetrack.py --motor   # + Damiao 모터 제어
 - `legacy/`: `face_tracker_xl430_06_14.py`(이전 세대 Dynamixel 트래커),
   `local.py`(라즈베리파이 영상 스트림 서버, 별개 용도) — 둘 다 참고용.
 
-## 공용 모터 — `motor/dm4310_tracker.py`
+## 검증과 남은 작업
 
-Yaw/Pitch DM4310 모터 2개를 Damiao USB-CAN 동글(921600 baud, 저수준 프레이밍은
-`motor/DM_CAN.py`)로 MIT 모드 제어한다.
-
-```
-torque = Kp·(q_des − q) + Kd·(dq_des − dq) + tau_ff
-```
-
-이 식은 **모터 자신의 MCU**가 계산한다. 호스트(`Tracker`)는 목표 위치
-`q_des`만 CAN으로 계속 갱신해서 보내고, 부드러움은 MIT 임피던스(Kp/Kd)가
-물리적으로 담당한다.
-
-- **클로즈드 루프**: 매 CAN 사이클 모터가 돌려주는 실측 위치/속도/토크를
-  다음 목표 계산의 기준으로 삼는다(호스트 시뮬레이션 값이 아님).
-- **제어 스레드**: `Tracker` 인스턴스당 1개, 목표 `CONTROL_FREQ` Hz로 계속
-  스트리밍. 실측 주파수는 `get_actual_freq()`, 그 외에도 카메라→목표좌표
-  Hz(`get_update_freq()`), CAN 송신 Hz(`get_can_tx_freq()`), 축별 수신 Hz
-  (`get_rx_freq(axis)`)를 전부 실측할 수 있다 — `start.sh` 1·2·3번 화면에
-  실시간으로 표시됨.
-- **`Tracker.update(x, y)`**: 픽셀 오차 × `RAD_PER_PIXEL_X/Y` → 각도 스텝 →
-  실측 현재 위치에 더해서 다음 목표로 삼는다.
-- **`Tracker.go_to(yaw_rad, pitch_rad, duration)`**: 임의의 목표로 선형 램프
-  이동 (`go_center()`는 이걸 호출하는 (0,0) 특수 케이스).
-- 축별 임피던스 게인(`KP_YAW`/`KD_YAW`, `KP_PITCH`/`KD_PITCH`)이 서로
-  독립이고, Pitch 전용 중력보상 피드포워드 `TAU_FF_PITCH`로 자중으로 인한
-  steady-state 오차를 보정한다 (Yaw는 `TAU_FF_YAW=0` 고정) — 배경은
-  [튜닝 중인 값](#튜닝-중인-값--알아둘-것) 참고.
-
-## 테스트 도구
-
-**`./start.sh`가 평소 쓰는 메인 테스트 진입점**이다 — 카메라+YOLO+모터를
-한 메뉴에서 실제 운영 코드(`main.py`/`people/main_facetrack.py`)와 동일한
-경로로 전부 확인할 수 있다. `tools/actuator_test.sh`는 그보다 아래 단계,
-모터를 CAN 버스에 처음 배선하거나 CAN ID/영점만 따로 만질 때 쓰는 저수준
-도구다.
-
-### `./start.sh` — 모터+카메라 통합 테스트 (메인)
-
-`tools/motor_manual_control.py`를 실행한다.
-
-| # | 메뉴 | 키 |
-| --- | --- | --- |
-| 1 | 동물 추적 + 종별 음향 재생 | `w`=조준 시작(타겟모드), `r`=재추적, `q`=복귀 |
-| 2 | 사람을 동물로 간주해 추적 | 1번과 동일 |
-| 3 | YOLO 코 좌표 추적 | 손 2초 이상 들면 자동 확정, `r`=재추적, `q`=복귀 |
-| 4 | 방향키 위치 제어 | `a`/`d`=yaw, `w`/`s`=pitch, `q`=복귀 |
-| 5 | 음향테스트용 위치 고정 (0°,0°) | `q`=복귀 |
-
-공통 규칙:
-- **박스 색**: 탐지되면 노란 박스, 추적이 확정(타겟모드)되면 초록 박스로 바뀐다.
-- **화면 하단 키 힌트바**가 고정 표시된다.
-- `q`/`ESC`로 **정상** 종료하면 "숙인위치"(yaw=0°, pitch=-4°)로 1초간 복귀한
-  뒤 메뉴로 돌아간다. `Ctrl+C` 강제중지는 복귀 없이 바로 멈춘다(의도된 동작).
-- 1·2·3번은 포트를 `Tracker`로 새로 열어야 해서 메뉴용 연결을 잠깐 닫았다가
-  다시 연다. 4·5번은 그 연결을 그대로 쓴다.
-
-**1번 상세**: `main.py`와 동일한 `animal/wildlife.py`/`camera.py`/`settings.py`를
-재사용(`EscapeTracker` 포함). 탐지(노란 박스)는 시작하자마자 바로 되지만,
-`w`를 눌러야 실제 조준이 시작된다(`main.py` 자체는 이 게이팅 없이 탐지
-즉시 조준+재생함 — 테스트 메뉴에서만 시작 시점을 수동으로 통제). WAV
-재생은 `w`와 무관하게 탐지 즉시 동작. 타겟이 lock되면 박스가 초록으로
-바뀌고, torso 박스(청록)와 실제 조준점(빨간 점)이 같이 표시되며, 화면에
-`[Escape] <상태>`로 지금 기준 면적을 모으는 중인지/추적 중인지/도주로
-풀렸는지가 바로 보인다. 탐지가 2초 넘게 끊기면(`TRACK_LOST_SECONDS`)
-`r`을 누른 것처럼 자동으로 타겟 모드가 풀린다(도주 조건으로 풀린 경우는
-자동 재선정되므로 타겟 모드는 유지).
-
-**2번 상세**: 실제 동물 없이 1번의 추적 알고리즘을 시험하는 용도. 루프·
-`EscapeTracker`·`w`/`r` 게이팅·화면 표시가 1번과 완전히 같고, 탐지 모델만
-`weights.pt` 대신 `yolov8n-pose.pt`로 바꿔 사람을 동물 한 종처럼 넣는다
-(`animal/person_proxy.py`). COCO YOLO엔 torso 클래스가 없어서 어깨·골반
-키포인트 4점을 감싸는 박스를 torso로 쓰므로, torso 조준과 급속이동 판정이
-1번과 똑같이 동작한다(골반이 화면 밖이면 torso 미검출 → bbox 중심 폴백).
-사람이 잡히면 멧돼지 WAV를 재생한다. 관련 값은 `animal/settings.py`의
-`PERSON_*`(모델 경로, 음원 그룹, 키포인트 최소 신뢰도)이고, 도주 판정
-임계값 등 나머지는 1번 설정을 그대로 공유한다.
-
-**3번 상세**: `people/main_facetrack.py`와 같은 `YoloPoseDetector`. 대상 몸
-박스와 코 좌표를 항상 표시하고, 손을 `ARM_UP_THRESHOLD`(2초) 이상 들어야
-모터가 실제로 따라간다(확정 순간 `assets/voice/track_start2.mp3` 1회 재생).
-확정이 아니면 기본 자세(0°, 30°)로 복귀한다.
+하드웨어 없는 회귀 검증:
 
 ```bash
-# 개별 스크립트로 직접 실행하고 싶을 때
-uv run python tools/motor_goto.py 1200 900     # 좌표 하나로 이동 후 유지
-uv run python tools/camera_test.py             # 카메라만 미리보기
-uv run python tools/camera_test.py --list      # 카메라 인덱스 스캔
-uv run python tools/zero_actuator.py           # 영점 설정 (enable 안 함)
+uv run python -m unittest discover -s tests -v
+bash -n start.sh tools/actuator_test.sh
 ```
 
-### `./tools/actuator_test.sh` — 액추에이터 단독 점검 (저수준)
+테스트는 경계음→5초 관찰→재조준→위협음, 고정 중 모터 목표 불변, 이탈/유실
+종료 우선순위, stop latch, 오래된 추론 폐기, 실제 ByteTrack의 종/torso ID 분리,
+재생 프로세스 실패, packed YUY2, 모터 부호·중앙 목표 갱신·CAN 장애를 다룬다.
+실제 카메라·모터 구동 및 실제 스피커 출력은 이 코드 변경에서 시험하지 않았다.
 
-카메라·YOLO 없이 모터 **1개씩** 점검한다. 새 모터를 처음 배선했을 때,
-CAN ID를 모르거나 바꿔야 할 때, 영점만 다시 잡고 싶을 때 쓴다 — 평소
-동작 확인은 위 `start.sh`로 충분하다. 프로젝트 루트에서
-`./tools/actuator_test.sh`로 실행한다(포트는 `motor/dm4310_tracker.py`의
-`DEVICENAME`을 그대로 쓰므로, 포트가 바뀌면 그 한 곳만 고치면 된다).
+다음 실기 작업은 다음 순서다.
 
-| # | 메뉴 | 비고 |
-| --- | --- | --- |
-| 1 | CAN ID 찾기/할당 (스캔) | CAN ID 몰라도 됨 — 1~10 스캔, 모터 1대만 연결 |
-| 2 | CAN ID 설정 (직접 입력) | ID를 이미 알 때 |
-| 3 | 신호 조회 | 토크 없이 통신 생존만 확인 |
-| 4 | 위치 신호 (MIT 테스트) | 작게 왕복 |
-| 5 | 위치 이동 | 목표로 이동 후 유지(왕복 안 함), Ctrl+C로 종료 |
-| 6 | 제로잉 | 영점 설정 |
-| 7 | 게인 설정 | 이번 실행에만 적용(파일 상수는 안 바뀜) |
-| 8 | 카메라 테스트 | 모터/CAN 무관 |
+1. **경계음 raw/EQ 업로드**: 두 종 각각 파일을 채우고 모델의 종 매핑과 청감 확인.
+2. **기구 확인**: 양 축 + 명령의 실제 오른쪽/위쪽 이동, 영점, 범위, 0°/+30° 복귀,
+   피드백 상태 코드와 실측 CAN 주파수 확인. 정지된 목표를 실제 기구가 유지하는지 확인.
+3. **조준 기준 튜닝**: 현재 중앙 1.5%, 속도 0.05 rad/s, 유지 0.5초, 3프레임 필터와
+   이상치 거리 15%를 실제 검출 FPS·진동·가림 조건에서 조정.
+4. **종합 리허설**: 사람 대역으로 경계음 완료 후 5초, 재조준, 위협음 1회, 대상 소실,
+   카메라 단절, 오디오 장치 오류, stop/resume을 확인. 이어 실제 동물 영상/현장 검증.
+5. **최종 이탈 기준 및 반복 정책**: 현재 휴리스틱과 1회 위협음 후 관찰 정책을 현장에서
+   평가. 보호 구역 좌표, 퇴치 성공 판단, 위협음 추가 반복 여부는 이후 요구사항으로 확정.
 
-3~6번은 1·2번으로 CAN ID가 지정돼야 실행된다.
-
-## 음향 테스트 데이터 — `audio_test/`
-
-스피커 거리·각도·주파수별 음압(dB) 측정 시트. 자세한 열 구조는
-[`audio_test/README.md`](audio_test/README.md) 참고.
-
-## 튜닝 중인 값 / 알아둘 것
-
-하드웨어 실기 테스트로 계속 바뀌는 값들 — **정확한 현재 값은 각 파일에서
-직접 확인**하고(여기 못 박아두면 튜닝할 때마다 문서도 고쳐야 해서 일부러
-수치를 안 적는다), 아래 "왜"만 기억해두면 된다.
-
-| 값 | 위치 | 왜 임의로 되돌리면 안 되는지 |
-| --- | --- | --- |
-| `SIGN_YAW`/`SIGN_PITCH` | `motor/dm4310_tracker.py` | 이론 유도는 `-1`이지만 실측 확정값은 `+1` — 실기로 검증된 값, 다른 기구/배선이면 재검증 필요 |
-| `KP_YAW`/`KD_YAW`, `KP_PITCH`/`KD_PITCH` | 〃 | 축별로 완전히 독립 — 실기로 계속 튜닝 중 |
-| `TAU_FF_PITCH` | 〃 | MIT 제어식엔 적분항이 없어 Pitch 자중으로 영구적 steady-state 오차가 생김 — 이 피드포워드로 보정 중. 한 지점(30°)에서 역산한 값이라 가동범위 전체에선 `cos(θ)` 비례 오차가 남을 수 있음(완전 보정하려면 상수→각도의 함수로) |
-| `HFOV_DEG`/`VFOV_DEG` | 〃 | 렌즈 스펙 이론값(82°/66°)에서 출발했지만 짐벌 기어비 미반영으로 실측이 그보다 많이 작음 — 정상이니 이론값으로 되돌리지 말 것 |
-| `YAW_RANGE_RAD`/`PITCH_RANGE_RAD` | 〃 | 실제 기구 한계에 맞춰 튜닝 |
-
-기타 확정된 값(바뀔 일 없음): 카메라 인덱스 4, CAN ID Yaw=`0x01`/Pitch=`0x02`,
-제로잉/CAN ID 변경 후 `save_motor_param()`으로 플래시 저장(안 하면 전원
-재인가 시 초기화), 모터 고장 코드(ERR 니블)는 `Motor.getError()`로 조회
-가능(`tools/actuator_conn_test.py`가 자동 점검).
+`animal/animal_escape_tracking_combined.py`는 기존 오프라인 분석 원본이며 운영 루프가
+호출하지 않는다. `legacy/`는 이전 Dynamixel/영상 서버 자료다.
+음향 측정 CSV는 [`audio_test/README.md`](audio_test/README.md)에 설명되어 있다.

@@ -11,9 +11,8 @@ from __future__ import annotations
 import math
 
 from animal import settings
-from animal.wildlife import (
-    Detection, Event, WildlifeDeterrent, _plain, read_detections,
-)
+from animal.wildlife import WildlifeDeterrent
+from animal.perception import Detection, _plain, read_detections
 
 # 모델이 내는 클래스가 아니라 키포인트로 만든 합성 클래스 — 실제 모델 클래스
 # ID 와 절대 겹치지 않도록 음수를 쓴다.
@@ -23,8 +22,9 @@ TORSO_CLASS_ID = -1
 TORSO_KEYPOINTS = (5, 6, 11, 12)
 
 
-def torso_from_keypoints(points: list, scores: list,
-                         frame_size: tuple[int, int]) -> Detection | None:
+def torso_from_keypoints(
+    points: list, scores: list, frame_size: tuple[int, int]
+) -> Detection | None:
     """어깨·골반 4점을 감싸는 박스. 신뢰도는 4점 중 최저값 — 실제 채택 여부는
     WildlifeDeterrent.torso_confidence 로 동물 torso 와 같은 자리에서 거른다."""
     if len(points) <= max(TORSO_KEYPOINTS) or len(scores) <= max(TORSO_KEYPOINTS):
@@ -42,19 +42,23 @@ def torso_from_keypoints(points: list, scores: list,
     return Detection(TORSO_CLASS_ID, max(0.0, min(1.0, confidence)), (x1, y1, x2, y2))
 
 
-def read_person_detections(result: object) -> tuple[tuple[int, int], tuple[Detection, ...]]:
-    """사람 박스(read_detections 그대로, track_id 포함) + 키포인트 torso 박스."""
+def read_person_detections(
+    result: object,
+) -> tuple[tuple[int, int], tuple[Detection, ...]]:
+    """Raw pose boxes and keypoints retain their original shared indices."""
     frame_size, people = read_detections(result)
     keypoints = getattr(result, "keypoints", None)
     if not people or keypoints is None or keypoints.conf is None:
         return frame_size, people
     all_points, all_scores = _plain(keypoints.xy), _plain(keypoints.conf)
-    # model.track() 이 박스를 track 순서로 재정렬할 때 keypoints 도 같은
-    # 인덱스로 함께 재정렬되므로 사람 박스와 1:1 로 대응한다.
+    # Use raw predict() results before animal identity tracking reorders boxes.
     if not (len(all_points) == len(all_scores) == len(people)):
         raise ValueError("pose keypoints do not match person boxes")
-    torsos = [torso for points, scores in zip(all_points, all_scores, strict=True)
-              if (torso := torso_from_keypoints(points, scores, frame_size)) is not None]
+    torsos = [
+        torso
+        for points, scores in zip(all_points, all_scores, strict=True)
+        if (torso := torso_from_keypoints(points, scores, frame_size)) is not None
+    ]
     return frame_size, (*people, *torsos)
 
 
@@ -68,14 +72,17 @@ def person_deterrent_from_settings(**kwargs) -> WildlifeDeterrent:
     )
 
 
-def process_person_frame(model: object, service: WildlifeDeterrent,
-                         frame: object, captured_at: float) -> Event:
-    # animal/wildlife.py 의 process_frame() 과 같은 model.track(persist=True)
-    # — EscapeTracker 가 그 track ID 로 사람 한 명을 lock 한다. torso 는 박스
-    # 탐지가 아니라 키포인트에서 나오므로 conf 는 사람 박스 기준만 건다.
-    results = model.track(frame, persist=True, tracker=service.tracker_config,
-                          conf=service.min_selection_confidence, verbose=False)
-    if len(results) != 1:
-        raise ValueError("person model must return one result per frame")
-    frame_size, detections = read_person_detections(results[0])
-    return service.process_detections(frame_size, detections, captured_at)
+def process_person_frame(
+    model, service, frame, captured_at, *, now=None, generation=None
+):
+    import time
+    from animal.inference import infer_detections
+
+    size, detections = infer_detections(model, service, frame, person_proxy=True)
+    return service.process_detections(
+        size,
+        detections,
+        captured_at,
+        now=time.monotonic() if now is None else now,
+        generation=generation,
+    )

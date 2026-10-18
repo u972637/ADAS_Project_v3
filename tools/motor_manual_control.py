@@ -1,67 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Yaw(CAN 1)/Pitch(CAN 2) 모터 + 카메라 통합 테스트 메뉴.
-
-motor/dm4310_tracker.py 와 동일한 연결 정보·게인을 그대로 가져와 두 축을
-구동한다.
-
-메뉴:
-  1. 동물 추적 + 종별 음향 재생 (main.py 와 동일한 wildlife.py 파이프라인)
-  2. 사람을 동물로 간주해 추적 (1번과 같은 파이프라인, 모델만 YOLO pose)
-  3. YOLO 코 좌표 추적 (손들기 ARM_UP_THRESHOLD초로 추적 시작)
-  4. 방향키로 위치 제어 (모터 각도를 직접 조그)
-  5. 음향테스트용 위치 고정 (yaw=0°, pitch=0°로 이동 후 유지)
-  0. 종료
-
-1~5번 모두 **q 또는 ESC로 정상 종료하면** 공통으로 "숙인위치"
-(BOW_YAW_DEG=0°, BOW_PITCH_DEG=-4°)로 BOW_DURATION(1초)에 걸쳐 복귀한 뒤
-메뉴로 돌아온다 (Ctrl+C 로 강제중지한 경우는 복귀 없이 바로 모터를 끈다).
-
-1번 진입 시 동작 — people/main_facetrack.py 가 아니라 main.py 가 쓰는
-wildlife.py/camera.py/settings.py 조합을 그대로 재사용해 멧돼지/고라니를
-탐지하고, 탐지된 bbox 중심으로 Tracker 를 조준한 뒤 종에 맞는 WAV를
-무작위로 재생한다. main.py 자체를 그대로 실행하면 Tracker 를 내부에 숨겨
-가지고 있어 종료 시 숙인위치로 보낼 수 없으므로, 이 함수가 Tracker 를
-직접 들고 재구현한다.
-
-2번 진입 시 동작 — 1번과 완전히 같은 루프·EscapeTracker(타겟 ID 고정,
-도주감지, torso 조준)·w/r 게이팅을 쓰되, 탐지 모델만 weights.pt 대신
-YOLO pose(yolov8n-pose.pt)로 바꿔 사람을 동물 한 종처럼 취급한다. 실제
-동물 없이 추적 알고리즘을 시험하는 용도. torso 는 어깨·골반 키포인트로
-만들고(animal/person_proxy.py), 사람이 잡히면 멧돼지 WAV를 재생한다
-(animal/settings.py 의 PERSON_* 설정).
-
-3번에서 손들기로 추적이 확정되는 그 순간(락온)에 assets/voice/track_start2.mp3 를
-1회 재생해 추적 시작을 알린다. 화면에는 검출된 코 좌표를 항상 표시하지만, 실제로
-motor/dm4310_tracker.py 의 Tracker.update(x, y) 를 호출해 모터를 움직이는
-건 그 사람이 ARM_UP_THRESHOLD(2초) 이상 손을 들고 있어야 시작되고(=
-"추적 확정"), ARM_DOWN_GRACE(프레임) 넘게 손을 내리면 멈춘다. "타겟
-모드"(확정 상태)가 아니면 즉시 기본 자세(DEFAULT_YAW_DEG=0°,
-DEFAULT_PITCH_DEG=30°)로 1회 복귀한다.
-
-4번 진입 시 조작 — 모터 각도를 직접 명령:
-  a : yaw   +STEP_DEG    d : yaw   -STEP_DEG
-  w : pitch +STEP_DEG    s : pitch -STEP_DEG
-  q : 메뉴로 복귀 (Ctrl+C 는 프로그램 전체 종료)
-
-한 번 입력될 때마다 STEP_DEG 만큼 누적된다. 이 스크립트가 "키를 누르고
-있음"을 직접 감지하는 게 아니라, 터미널/OS 가 키를 꾹 누르고 있을 때 반복
-입력해주는 자동반복(auto-repeat) 이벤트를 매번 더하는 방식이라, 꾹 누르고
-있으면 계속 쌓인다. STEP_DEG 는 보수적으로(작게) 잡혀 있다 — 필요하면 상수
-값만 조정할 것.
-
-안전 가동범위(도) — 나중에 이 값만 고치면 된다:
-  YAW_MIN_DEG   / YAW_MAX_DEG   = -175 / 175
-  PITCH_MIN_DEG / PITCH_MAX_DEG =  -30 / 180
-
-5번 진입 시 동작 — 카메라/YOLO 없이 모터만 yaw=0°, pitch=0°(정면·수평)로
-이동시켜 그 자리에 고정한다. audio_test/ 의 각도·거리별 dB 측정을 할 때,
-스피커(짐벌) 조준은 항상 0°로 고정해두고 마이크를 각 각도·거리로 옮겨가며
-재는 용도다. q 또는 ESC 로 메뉴 복귀.
-
-실행:
-  uv run python tools/motor_manual_control.py
+"""Shared-rig menu. 1/2 use animal.runtime; 3 retains the legacy hand-raise demo.
+4/5 use the same Tracker, logical right/up +, limits and 500 Hz loop as runtime.
 """
 
 import math
@@ -81,59 +21,26 @@ if TEST_DIR not in sys.path:
 
 import cv2
 import numpy as np
-import serial
 from PIL import Image, ImageDraw, ImageFont
-from ultralytics import YOLO
 
-from motor.DM_CAN import Motor, MotorControl, Control_Type
-from motor.dm4310_tracker import (
-    DEVICENAME, BAUDRATE, MOTOR_TYPE,
-    CAN_ID_YAW, CAN_ID_PITCH, MASTER_ID_YAW, MASTER_ID_PITCH,
-    KP_YAW, KD_YAW, KP_PITCH, KD_PITCH, TAU_FF_YAW, TAU_FF_PITCH,
-    Tracker, FRAME_W, FRAME_H,
-)
+from motor.dm4310_tracker import Tracker, FRAME_W, FRAME_H
 # camera_test.py 는 같은 tools/ 폴더에 있는 가벼운 카메라 열기/프레임 변환
 # 유틸리티 — people/main_facetrack.py 를 그대로 import하면 ultralytics/torch 까지
 # 끌려와 무거워지므로, 카메라 관련 부분만 재사용한다.
 from camera_test import DEFAULT_CAMERA_IDX, open_camera as cam_open_camera, read_frame as cam_read_frame
 from detection.yolo_pose import YoloPoseDetector
 
-# main.py(야생동물 음향 퇴치)가 쓰는 것과 동일한 모듈 — 1·2번 메뉴가 재사용한다.
-from animal import settings
-from animal.person_proxy import person_deterrent_from_settings, process_person_frame
-from animal.wildlife import (
-    TrackerCameraController, WildlifeDeterrent, process_frame, validate_model_classes,
-)
 from animal.mp3_player import MP3LoopPlayer
 
 AXES = ("yaw", "pitch")
-CAN_ID = {"yaw": CAN_ID_YAW, "pitch": CAN_ID_PITCH}
-MASTER_ID = {"yaw": MASTER_ID_YAW, "pitch": MASTER_ID_PITCH}
-# motor/dm4310_tracker.py 와 동일한 축별 게인/피드포워드를 그대로 가져와 쓴다
-# (Pitch 만 중력보상 TAU_FF_PITCH 를 가질 수 있고, Yaw 는 항상 0).
-_KP     = {"yaw": KP_YAW,   "pitch": KP_PITCH}
-_KD     = {"yaw": KD_YAW,   "pitch": KD_PITCH}
-_TAU_FF = {"yaw": TAU_FF_YAW, "pitch": TAU_FF_PITCH}
-
 # 방향키 한 번(자동반복 포함) 입력당 움직일 각도(도). 보수적으로 작게 잡음.
 STEP_DEG = 1.0
 
-# 테스트 시작 시 램프 이동할 기본 자세(도). 짐벌이 완전히 수평(0,0)이 아니라
-# 보통 사람 얼굴 높이를 보도록 pitch 를 띄워둔 상태를 기본으로 쓴다.
-# 나중에 바꾸고 싶으면 이 두 상수만 고치면 됨.
-DEFAULT_YAW_DEG = 0.0
-DEFAULT_PITCH_DEG = 30.0
-
-# 안전 가동범위(도) — 나중에 이 값만 고치면 됨
-YAW_MIN_DEG,   YAW_MAX_DEG   = -175.0, 175.0
-PITCH_MIN_DEG, PITCH_MAX_DEG =  -30.0, 180.0
-_RANGE_DEG = {
-    "yaw":   (YAW_MIN_DEG,   YAW_MAX_DEG),
-    "pitch": (PITCH_MIN_DEG, PITCH_MAX_DEG),
-}
-
-# 제어 스트리밍 주파수(Hz) — 운영 코드(motor/dm4310_tracker.py)와 동일하게 1000Hz
-CONTROL_FREQ = 1000
+from motor.config import (DEFAULT_YAW_DEG, DEFAULT_PITCH_DEG, CONTROL_FREQ,
+                          YAW_RANGE_RAD, PITCH_RANGE_RAD)
+YAW_MIN_DEG, YAW_MAX_DEG = -math.degrees(YAW_RANGE_RAD), math.degrees(YAW_RANGE_RAD)
+PITCH_MIN_DEG, PITCH_MAX_DEG = -math.degrees(PITCH_RANGE_RAD), math.degrees(PITCH_RANGE_RAD)
+_RANGE_DEG = {'yaw': (YAW_MIN_DEG, YAW_MAX_DEG), 'pitch': (PITCH_MIN_DEG, PITCH_MAX_DEG)}
 DT = 1.0 / CONTROL_FREQ
 
 # ──────────────────────────────────────────────
@@ -247,69 +154,32 @@ def read_key_nonblocking():
 # ──────────────────────────────────────────────
 
 class ManualController:
+    """Manual goals use the common controller instead of a second CAN implementation."""
     def __init__(self):
-        self.ser = serial.Serial(DEVICENAME, BAUDRATE, timeout=0.001)
-        self.ctrl = MotorControl(self.ser)
-        self.motor = {}
-        for axis in AXES:
-            self.motor[axis] = Motor(MOTOR_TYPE, CAN_ID[axis], MASTER_ID[axis])
-            self.ctrl.addMotor(self.motor[axis])
-            if not self.ctrl.switchControlMode(self.motor[axis], Control_Type.MIT):
-                print(f"[WARN] {axis} 축 MIT 모드 전환 확인 불가 — 반응이 없을 수 있음")
-            self.ctrl.enable(self.motor[axis])
+        self.tracker = Tracker()
+        self.target_deg = {a: self.current_deg(a) for a in AXES}
 
-        # refresh_motor_status() 는 조회 프레임을 보내고 그 순간 도착해
-        # 있는 바이트만 즉시 읽는다(시리얼 timeout=0.001s) — 응답이 아직
-        # 안 와 있으면 Motor.__init__ 의 기본값(0.0)을 그대로 읽게 돼,
-        # 실제 위치가 0°가 아닌데도 target_deg 가 0°로 초기화되어 조그
-        # 시작하자마자 그쪽으로 튀는 버그가 있었다. 몇 번 재시도해서 실제
-        # 응답을 받을 때까지 기다린다.
-        self.target_deg = {}
-        for axis in AXES:
-            for _ in range(20):
-                self.ctrl.refresh_motor_status(self.motor[axis])
-                if self.motor[axis].has_received_any():
-                    break
-                time.sleep(0.02)
-            else:
-                print(f"[WARN] {axis} 축 위치 응답을 못 받음 — 실제 위치가 아닌 "
-                      f"기본값(0°)으로 시작할 수 있음")
-            self.target_deg[axis] = math.degrees(self.motor[axis].getPosition())
-
-    def current_deg(self, axis: str) -> float:
-        return math.degrees(self.motor[axis].getPosition())
+    def current_deg(self, axis):
+        return math.degrees(self.tracker.get_state(axis)[0])
 
     def _send(self):
-        for axis in AXES:
-            q_des = math.radians(self.target_deg[axis])
-            self.ctrl.controlMIT(self.motor[axis], _KP[axis], _KD[axis], q_des, 0.0, _TAU_FF[axis])
+        self.tracker.assert_healthy()
 
-    def nudge(self, axis: str, delta_deg: float):
+    def nudge(self, axis, delta_deg):
         lo, hi = _RANGE_DEG[axis]
-        self.target_deg[axis] = clamp(self.target_deg[axis] + delta_deg, lo, hi)
+        self.target_deg[axis] = clamp(self.target_deg[axis]+delta_deg, lo, hi)
+        self.tracker.go_to(*(math.radians(self.target_deg[a]) for a in AXES), duration=0)
 
-    def ramp_to(self, goal_deg: dict, duration: float):
-        """임의의 목표 각도(도)로 duration초에 걸쳐 선형 램프 이동."""
-        start = dict(self.target_deg)
-        steps = max(int(duration * CONTROL_FREQ), 1)
-        dt = duration / steps
-        for i in range(1, steps + 1):
-            frac = i / steps
-            for axis in AXES:
-                self.target_deg[axis] = start[axis] + (goal_deg[axis] - start[axis]) * frac
-            self._send()
-            time.sleep(dt)
+    def ramp_to(self, goal_deg, duration):
+        self.target_deg = {a: clamp(goal_deg[a], *_RANGE_DEG[a]) for a in AXES}
+        self.tracker.go_to(*(math.radians(self.target_deg[a]) for a in AXES), duration=duration)
+        deadline = time.monotonic()+duration
+        while time.monotonic() < deadline:
+            self.tracker.assert_healthy()
+            time.sleep(0.01)
 
     def close(self):
-        # Ctrl+C 등으로 이미 한 번 닫힌 뒤 바깥 try/finally 가 다시 close() 를
-        # 호출하는 경로가 있어, 이미 닫힌 포트에 재차 disable() 을 보내 예외가
-        # 나는 걸 막기 위해 멱등하게 만든다.
-        if getattr(self, "_closed", False):
-            return
-        self._closed = True
-        for axis in AXES:
-            self.ctrl.disable(self.motor[axis])
-        self.ser.close()
+        self.tracker.close()
 
 
 # ──────────────────────────────────────────────
@@ -317,7 +187,7 @@ class ManualController:
 # ──────────────────────────────────────────────
 
 def run_manual_jog(mc: ManualController):
-    print("\n[방향키 제어] a/d=yaw +/-, w/s=pitch +/-, q=메뉴로 복귀 (Ctrl+C=완전 종료)")
+    print("\n[방향키 제어] a/d=yaw -/+, w/s=pitch +/-, q=메뉴로 복귀 (Ctrl+C=완전 종료)")
     print(f"  스텝: {STEP_DEG}°/입력  범위: yaw[{YAW_MIN_DEG:.0f},{YAW_MAX_DEG:.0f}]° "
           f"pitch[{PITCH_MIN_DEG:.0f},{PITCH_MAX_DEG:.0f}]°\n")
 
@@ -331,9 +201,9 @@ def run_manual_jog(mc: ManualController):
                 print("\n[메뉴로 복귀]")
                 break
             elif key == 'a':
-                mc.nudge("yaw", +STEP_DEG)
-            elif key == 'd':
                 mc.nudge("yaw", -STEP_DEG)
+            elif key == 'd':
+                mc.nudge("yaw", +STEP_DEG)
             elif key == 'w':
                 mc.nudge("pitch", +STEP_DEG)
             elif key == 's':
@@ -411,199 +281,11 @@ def run_audio_test_pose(mc: ManualController):
 # 메뉴 2: 사람을 동물로 간주해 추적 (person_proxy=True)
 # ──────────────────────────────────────────────
 
-def run_wildlife_track(person_proxy: bool = False):
-    """
-    main.py(야생동물 음향 퇴치)와 동일한 wildlife.py/camera.py/settings.py
-    조합을 그대로 재사용해 멧돼지/고라니를 탐지한다. 탐지 자체(화면에 bbox
-    표시, 확정 전엔 노란 박스)는 시작하자마자 바로 되지만, 실제로
-    motor/dm4310_tracker.py 의 Tracker 로 조준(= "타겟 모드", 박스가 초록
-    으로 바뀜)하는 건 **w 키를 눌러야** 시작된다 — w 를 누르기 전까지는
-    종에 맞는 WAV 재생/조준 없이 탐지 결과만 보여준다. **r 키**를 누르면
-    타겟 모드를 해제하고(재추적) 다시 w 로 시작할 수 있는 대기 상태로
-    돌아간다. (main.py 자체는 이 게이팅 없이 탐지되는 즉시 조준+재생한다 —
-    이 테스트 메뉴에서만 수동으로 시작/재시작 시점을 통제할 수 있게 w/r 를
-    추가함.)
-
-    main.py 를 그대로 실행하면 Tracker 를 자기 안에 숨겨 갖고 있어 q 종료
-    시 숙인위치로 보낼 수 없으므로, 이 함수가 Tracker 를 직접 들고 있는
-    채로 main.py 의 run() 과 비슷한 루프를 재구현한다. q/ESC 로 정상
-    종료하면 _bow_tracker() 로 숙인위치에 복귀한다.
-
-    person_proxy=True(2번)면 위 동작을 전부 그대로 두고 모델만 YOLO pose
-    (settings.PERSON_MODEL_PATH)로 바꿔 사람을 동물 한 종처럼 넣는다 —
-    torso 는 키포인트로 만들고(animal/person_proxy.py) WAV 는
-    settings.PERSON_CLASS_TO_AUDIO 에 맞춰 재생한다.
-
-    4번(수동 조그)과 포트를 동시에 쓸 수 없으므로(같은 시리얼 장치),
-    이 함수 안에서 자체적으로 Tracker 를 새로 열고 끝나면 닫는다 — 호출하는
-    쪽(main())이 먼저 ManualController 를 닫아둔 상태여야 한다.
-    """
-    if person_proxy:
-        print("\n[사람 대역 추적 테스트] 사람을 동물처럼 탐지해 1번과 같은 추적 로직에 넣습니다.")
-    else:
-        print("\n[동물 추적 테스트] 멧돼지/고라니 탐지는 바로 시작하지만,")
-    print("  w 를 눌러야 실제 조준(타겟 모드)이 시작됩니다 — q 또는 ESC 로 메뉴 복귀\n")
-
-    model_path = settings.PERSON_MODEL_PATH if person_proxy else settings.MODEL_PATH
-    if not model_path.is_file():
-        print(f"[ERROR] 탐지 모델이 없습니다: {model_path} — 메뉴로 복귀합니다.")
-        return
-
-    print(f"[..] 탐지 모델 로드 중... ({model_path})")
-    model = YOLO(str(model_path))
-    print("[OK] 모델 로드 완료")
-
-    if person_proxy:
-        service = person_deterrent_from_settings()
-        step_frame = process_person_frame
-    else:
-        service = WildlifeDeterrent.from_settings()
-        step_frame = process_frame
-    try:
-        # 사람 대역의 torso 는 모델 클래스가 아니라 키포인트로 만든 합성
-        # 클래스라 모델 이름표로 검증할 대상이 아니다.
-        validate_model_classes(model.names, service.class_map, service.expected_names,
-                                torso_class_id=None if person_proxy else service.torso_class_id)
-    except ValueError as e:
-        print(f"[ERROR] 모델 클래스 불일치 — {e} — 메뉴로 복귀합니다.")
-        return
-    for class_id in sorted(service.class_map):
-        print(f"[CLASS] model {class_id}={model.names[class_id]} "
-              f"-> audio {service.class_map[class_id]}")
-
-    print(f"[..] 카메라 index={settings.CAMERA_INDEX} 여는 중...")
-    cap = cam_open_camera(settings.CAMERA_INDEX)
-    if cap is None:
-        print(f"[ERROR] 카메라(index={settings.CAMERA_INDEX})를 열 수 없습니다 — 메뉴로 복귀합니다.")
-        return
-
-    print("[..] Tracker 연결 중...")
-    tracker = Tracker()
-    camera_controller = TrackerCameraController(tracker, (FRAME_W, FRAME_H))
-    service.camera = None   # "타겟 모드"가 아니면 탐지는 하되 조준은 안 함 — w 로 켬
-    print("[OK] 연결 완료 — w 를 눌러야 실제로 조준을 시작합니다.")
-
-    disp_w, disp_h = int(FRAME_W * DISPLAY_SCALE), int(FRAME_H * DISPLAY_SCALE)
-    win_name = ("Person-as-Animal Tracking" if person_proxy else "Wildlife Tracking") \
-        + " (w: start tracking, q/ESC: back)"
-    cv2.namedWindow(win_name)
-    next_hz_print = time.time()   # 1초마다 파이프라인 전체 실측 Hz 콘솔 출력
-    target_mode = False   # w 를 누르면 True 로 전환되고 이후 계속 유지됨
-
-    try:
-        while True:
-            ok, frame = cam_read_frame(cap)
-            if not ok or frame is None:
-                time.sleep(0.01)
-                continue
-
-            event = step_frame(model, service, frame, time.monotonic())
-            if event.audio_file is not None:
-                print(f"[AUDIO] {event.reason}: {event.audio_file}")
-
-            # 탐지가 TRACK_LOST_SECONDS(2초) 넘게 끊겨서 EscapeTracker 가
-            # lock을 놓친 경우(= 진짜 도주가 아니라 AI 탐지 누락) — r을 누른
-            # 것처럼 타겟 모드를 자동으로 끈다. 도주 조건(면적감소/급속이동)
-            # 으로 풀린 경우는 EscapeTracker 가 알아서 새 타겟을 재선정하므로
-            # 여기서 타겟 모드를 건드리지 않는다.
-            if event.reason == "tracking_lost" and target_mode:
-                target_mode = False
-                service.camera = None
-                print("\n[타겟 모드 자동 해제] 2초 이상 탐지 누락 — r 입력과 동일 효과. "
-                      "w로 다시 시작하세요.")
-
-            disp = cv2.resize(frame, (disp_w, disp_h))
-            label = "No target"
-            if event.target is not None:
-                x1, y1, x2, y2 = (int(v * DISPLAY_SCALE) for v in event.target.xyxy)
-                box_color = (0, 255, 0) if target_mode else (0, 255, 255)   # 확정전=노랑, 확정(타겟모드)=초록
-                cv2.rectangle(disp, (x1, y1), (x2, y2), box_color, 2)
-                # 사람 대역은 event.label 이 음원 그룹(boar 등)이라 실제로
-                # 잡힌 게 사람임을 같이 보여준다.
-                shown = (f"person->{event.label}" if person_proxy
-                         else event.label or 'Unknown')
-                label = (f"{shown} {event.target.confidence:.2f} "
-                         f"ID:{event.target.track_id}")
-            cv2.putText(disp, f"{label} | {event.reason}", (10, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-            # 토르소(몸통) 박스 + 실제 조준점(점) 표시 — 모터는 토르소가
-            # 매칭된 동안은 이 점(토르소 중심)을 조준하고, 못 찾은 프레임에는
-            # 동물 bbox 중심으로 폴백한다(animal/wildlife.py 의 aim_target 과
-            # 동일한 우선순위).
-            step = service.last_escape_step
-            if step is not None and event.target is not None:
-                aim_point = None
-                if step.matched_torso is not None:
-                    tx1, ty1, tx2, ty2 = (int(v * DISPLAY_SCALE) for v in step.matched_torso.xyxy)
-                    cv2.rectangle(disp, (tx1, ty1), (tx2, ty2), (255, 255, 0), 2)  # 토르소=청록(cyan)
-                    aim_point = (int(step.matched_torso.center[0] * DISPLAY_SCALE),
-                                 int(step.matched_torso.center[1] * DISPLAY_SCALE))
-                else:
-                    aim_point = (int(event.target.center[0] * DISPLAY_SCALE),
-                                 int(event.target.center[1] * DISPLAY_SCALE))
-                cv2.circle(disp, aim_point, 6, (0, 0, 255), -1)  # 실제 조준점=빨간 점
-
-            # EscapeTracker 상태(타겟 lock/기준면적 수집/도주 판정 등) 표시 —
-            # "타겟 모드(w)"와는 별개로, 모터에 넘어갈 좌표 자체가 이 로직을
-            # 거쳤는지 직접 확인하려는 용도. 상태 문자열이 한글이라
-            # cv2.putText가 아니라 put_text_kr(PIL)로 그린다.
-            if service.last_escape_step is not None:
-                disp = put_text_kr(disp, f"[Escape] {service.last_escape_step.state}",
-                                    (10, 58), font_size=20, color_bgr=(0, 200, 255))
-
-            mode_text = "TARGET MODE (tracking)" if target_mode else "WAITING (press w to start tracking)"
-            mode_color = (0, 255, 0) if target_mode else (0, 255, 255)
-            cv2.putText(disp, mode_text, (10, 45),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, mode_color, 2)
-
-            cv2.putText(disp, "[W]Start [R]Reset [Q]Quit", (10, disp_h - 35),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-
-            hz_text = (f"cam->target {tracker.get_update_freq():.1f}Hz | "
-                       f"ctrl thread {tracker.get_actual_freq():.0f}Hz | "
-                       f"CAN tx {tracker.get_can_tx_freq():.0f}Hz | "
-                       f"rx yaw {tracker.get_rx_freq('yaw'):.0f}/"
-                       f"pitch {tracker.get_rx_freq('pitch'):.0f}Hz")
-            cv2.putText(disp, hz_text, (10, disp_h - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 0), 1)
-
-            now = time.time()
-            if now >= next_hz_print:
-                print(f"\r  [Hz] 카메라->목표좌표={tracker.get_update_freq():6.1f}  "
-                      f"제어스레드(틱)={tracker.get_actual_freq():6.1f}  "
-                      f"CAN-USB tx={tracker.get_can_tx_freq():6.1f}  "
-                      f"액추에이터 rx yaw={tracker.get_rx_freq('yaw'):6.1f} "
-                      f"pitch={tracker.get_rx_freq('pitch'):6.1f}   ",
-                      end="", flush=True)
-                next_hz_print = now + 1.0
-
-            cv2.imshow(win_name, disp)
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord('q'), 27):
-                break
-            elif key == ord('w') and not target_mode:
-                target_mode = True
-                service.camera = camera_controller
-                print("\n[타겟 모드 시작] w 입력 — 이제부터 탐지되면 실제로 조준합니다.")
-            elif key == ord('r') and target_mode:
-                target_mode = False
-                service.camera = None
-                print("\n[재추적] r 입력 — 타겟 모드 해제, w 로 다시 시작할 수 있습니다.")
-        # while 을 'q'/ESC(정상 종료)로 빠져나온 경우에만 실행된다 — 루프 중
-        # 예외(Ctrl+C 등)가 나면 아래로 내려오지 않고 바로 finally 로 간다.
-        _bow_tracker(tracker)
-    finally:
-        cv2.destroyWindow(win_name)
-        cap.release()
-        service.player.stop()
-        tracker.close()
-        print("\n[메뉴로 복귀] 카메라/Tracker 연결 종료")
+def run_wildlife_track(person_proxy=False):
+    from animal.runtime import run
+    run(person_proxy=person_proxy, enable_motor=True, start_paused=True)
 
 
-# ──────────────────────────────────────────────
-# 메뉴 3: YOLO 코 좌표 추적 ("인식모드")
-# ──────────────────────────────────────────────
 
 def run_auto_track():
     """
@@ -801,9 +483,7 @@ def print_menu():
 
 
 def main():
-    print("[..] 모터 연결 중...")
-    mc = ManualController()
-    print("[OK] 연결 완료")
+    mc = None  # Open a motor connection only for the selected menu.
 
     try:
         while True:
@@ -817,24 +497,26 @@ def main():
                 # 1·2·3번은 같은 시리얼 포트를 Tracker 로 새로 열어야 해서,
                 # ManualController 가 들고 있던 연결을 잠깐 반납했다가
                 # 돌아오면 다시 연다.
-                mc.close()
+                if mc is not None:
+                    mc.close()
+                    mc = None
                 run_wildlife_track(person_proxy=(choice == "2"))
-                print("[..] 모터 재연결 중...")
-                mc = ManualController()
-                print("[OK] 재연결 완료")
             elif choice == "3":
                 # 기본 자세로의 복귀는 따로 먼저 하지 않는다 — YOLO 모델
                 # 로드가 끝나고 추적 루프가 돌기 시작하면 (아직 타겟 모드가
                 # 아닌) 첫 프레임부터 run_auto_track() 내부의 "타겟 모드
                 # 아님 → 기본 자세" 로직이 자연스럽게 같은 동작을 한다.
-                mc.close()
+                if mc is not None:
+                    mc.close()
+                    mc = None
                 run_auto_track()
-                print("[..] 모터 재연결 중...")
-                mc = ManualController()
-                print("[OK] 재연결 완료")
             elif choice == "4":
+                if mc is None:
+                    mc = ManualController()
                 run_manual_jog(mc)
             elif choice == "5":
+                if mc is None:
+                    mc = ManualController()
                 run_audio_test_pose(mc)
             elif choice == "0":
                 print("종료합니다.")
@@ -844,7 +526,8 @@ def main():
     except KeyboardInterrupt:
         print("\n[중단]")
     finally:
-        mc.close()
+        if mc is not None:
+            mc.close()
         print("[OK] 모터 비활성화, 포트 닫힘")
 
 

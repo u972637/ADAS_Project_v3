@@ -20,7 +20,7 @@
 # 7번에서 바꾼 값은 이 스크립트를 실행하는 동안만 유지되는 임시값이다 —
 # tools/actuator_conn_test.py 맨 위 DEFAULT_KP/DEFAULT_KD/... 상수 자체를
 # 바꾸는 게 아니므로, 다음에 스크립트를 새로 실행하면 다시 그 파일의
-# 기본값(8.0 / 0.6 / 0.1rad≈5.73° / 1.0)으로 돌아간다. "항상 이 값으로 시작하고
+# 공유 기본값으로 돌아간다. "항상 이 값으로 시작하고
 # 싶다"면 tools/actuator_conn_test.py 상단의 DEFAULT_* 상수를 직접 고칠 것.
 #
 # 사용법: ./tools/actuator_test.sh (프로젝트 루트에서 실행)
@@ -47,10 +47,8 @@ CURRENT_DEVICE="$(uv run python3 -c "from motor.dm4310_tracker import DEVICENAME
 # 파이썬 파일의 상수는 그대로다.
 # 이동각은 사람이 보기 편하게 "도(degree)" 단위로 들고 있다가, 파이썬 호출
 # 시 --delta-deg 로 그대로 넘긴다(내부에서 라디안으로 변환해 CAN에 실림).
-KP="8.0"
-KD="0.6"
-DELTA_DEG="60"
-HOLD="1.0"
+DEFAULTS="$(uv run python -c 'import math; from tools.actuator_conn_test import DEFAULT_KP, DEFAULT_KD, DEFAULT_DELTA_RAD, DEFAULT_HOLD_SEC; print(DEFAULT_KP, DEFAULT_KD, math.degrees(DEFAULT_DELTA_RAD), DEFAULT_HOLD_SEC)')" || exit 1
+read -r KP KD DELTA_DEG HOLD <<< "$DEFAULTS"
 
 print_menu() {
     echo

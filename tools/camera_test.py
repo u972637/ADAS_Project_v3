@@ -24,53 +24,17 @@ import argparse
 import time
 
 import cv2
-import numpy as np
 
-# main.py 와 동일한 카메라 설정 (실제 연결 후 다르면 --index로 바꿔볼 것)
-DEFAULT_CAMERA_IDX = 4
-FRAME_W, FRAME_H = 2592, 1944
-CAMERA_FOURCC = "YUY2"          # B0538C(OG05B1B) 네이티브 출력 포맷(UVC 표준)
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from animal.camera import FRAME_W, FRAME_H, CAMERA_FOURCC, open_camera, read_camera_frame as read_frame
+from animal.settings import CAMERA_INDEX as DEFAULT_CAMERA_IDX
 
 # 2592x1944 그대로 띄우면 화면보다 커서 축소 표시만 한다
 DISPLAY_SCALE = 0.4
 
 FPS_PRINT_INTERVAL = 1.0  # 실측 fps 콘솔 출력 간격(초)
-
-
-def open_camera(index: int):
-    cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
-    if not cap.isOpened():
-        return None
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*CAMERA_FOURCC))
-    cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
-    cap.set(cv2.CAP_PROP_FPS, 25)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    return cap
-
-
-def read_frame(cap):
-    """main.py의 read_camera_frame()과 동일한 변환 로직(YUYV→BGR)."""
-    try:
-        ret, frame = cap.read()
-    except cv2.error as e:
-        print(f"[WARN] 프레임 읽기 실패: {e}")
-        return False, None
-
-    if not ret or frame is None:
-        return ret, frame
-
-    if len(frame.shape) == 2:
-        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-    elif len(frame.shape) == 3 and frame.shape[2] == 2:
-        frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUY2)
-
-    if frame.ndim != 3 or frame.shape[2] != 3:
-        print(f"[WARN] 지원하지 않는 프레임 형식: {frame.shape}")
-        return False, None
-
-    return True, frame
 
 
 def list_indices(max_index: int = 9):

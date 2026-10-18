@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-main.py — Arducam B0538C + YOLOv8 pose + Damiao DM-J4310-2EC(CAN, 1000Hz) 통합
+main.py — Arducam B0538C + YOLOv8 pose + Damiao DM-J4310-2EC(CAN, 500Hz) 통합
 
 동작 흐름:
   1. Arducam B0538C(video4, 2592x1944 @ 25fps, UVC YUY2)로 영상 수신
   2. PoseDetector(기본: YOLOv8 pose)로 사람 감지 + 관절 추출 (~25fps, 카메라 fps 한도)
   3. 손을 3초 이상 든 사람을 트래킹 대상으로 확정
   4. 확정된 사람의 코 좌표 → Tracker.update() (검출 fps 만큼 목표 좌표 입력)
-     → 1000Hz CAN MIT 스트리밍 스레드가 모터 실측 위치를 읽어 목표를 갱신하고
+     → 500Hz CAN MIT 스트리밍 스레드가 모터 실측 위치를 읽어 목표를 갱신하고
        실제 모터 제어 (motor/dm4310_tracker.py 참고)
 
 검출기는 detection.base.PoseDetector 인터페이스만 지키면 어떤 모델로도
@@ -250,7 +250,7 @@ def get_exit_direction(yaw_rad=None, nose_x=None):
     """이탈 방향 반환: 'right' | 'left' | None.
 
     yaw_rad 우선 사용, 없으면 nose_x(카메라)로 폴백.
-    yaw_rad > 0 → right, yaw_rad < 0 → left (motor/dm4310_tracker.py SIGN_YAW 기준).
+    yaw_rad > 0 → right, yaw_rad < 0 → left (motor/config.py 논리 좌표 기준).
     """
     if yaw_rad is not None:
         if yaw_rad > 0:
@@ -456,7 +456,7 @@ def main(use_motor: bool):
     greenlight_player  = MP3LoopPlayer(GREENLIGHT_MP3,  loop=False)
     finish_player      = MP3LoopPlayer(FINISH_MP3,      loop=False)
 
-    # 모터 초기화 (Damiao DM-J4310-2EC, CAN, 1000Hz MIT 스트리밍)
+    # 모터 초기화 (Damiao DM-J4310-2EC, CAN, 500Hz MIT 스트리밍)
     tracker = None
     if use_motor:
         try:
@@ -541,7 +541,7 @@ def main(use_motor: bool):
                 time.sleep(0.01)
                 continue
 
-            frame = cv2.flip(frame, 1)
+            # Unmirrored coordinates: Tracker uses logical right/up positive.
 
             _t0 = time.time()
             people = detector.detect(frame)          # ~25fps 검출 (카메라 fps 한도, PersonPose 목록)

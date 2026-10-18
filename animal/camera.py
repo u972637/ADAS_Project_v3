@@ -98,6 +98,11 @@ class CameraCapture:
                     print("[OK] 카메라 재연결 성공")
                     break
 
+    @property
+    def latest_capture_at(self):
+        with self._lock:
+            return self._captured_at
+
     def read_new(self, last_sequence: int):
         """Return each captured frame at most once with its monotonic time."""
         with self._lock:

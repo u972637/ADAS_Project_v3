@@ -61,19 +61,19 @@ from motor.dm4310_tracker import DEVICENAME, BAUDRATE, MOTOR_TYPE
 # 사용자 설정값(기본값) — 필요하면 아래 값들을 직접 수정해도 된다.
 #
 # 여기 값들은 "CLI 인자(--kp, --kd, --delta, --hold 등)를 안 줬을 때" 쓰이는
-# 기본값이다. actuator_test.sh 메뉴의 "게인 설정"에서 바꾼 값은 그 실행에만
+# 기본값이다. 게인은 motor/config.py를 따른다. actuator_test.sh 메뉴의 "게인 설정"에서 바꾼 값은 그 실행에만
 # 적용되는 임시값(세션 한정)이며, 이 상수들은 바꾸지 않는다 — 즉 메뉴에서
 # 설정 → 다음에 또 메뉴 없이 CLI로 직접 실행하면 다시 이 기본값으로
 # 돌아간다. "항상 이 값으로 시작하고 싶다"면 아래 상수 자체를 고쳐야 한다.
 # ============================================================
 
 # MIT 모드 테스트용 기본 게인(torque = Kp*(q_des-q) + Kd*(dq_des-dq) + tau_ff).
-# motor/dm4310_tracker.py 의 실제 운용값과 동일한 안전한 저값으로 맞춰둠.
+# 기본 게인은 motor/config.py에서 가져온다. 이 도구의 각도는 raw encoder 좌표다.
 #   Kp: 위치 오차에 대한 강성(스프링) — DM4310 범위 0~500. 너무 높이면
 #       목표 도달 시 튕기거나 진동할 수 있음. 낮은 값부터 올릴 것.
-DEFAULT_KP = 300.0
+from motor.config import KP_YAW as DEFAULT_KP, KD_YAW as DEFAULT_KD
 #   Kd: 속도 오차에 대한 감쇠(댐퍼) — DM4310 범위 0~5. 진동이 보이면 올릴 것.
-DEFAULT_KD = 3.0
+
 #   tau_ff: 피드포워드 토크(N·m). 중력보상 등에 쓰는 값이라 이 테스트에선 0 고정.
 DEFAULT_TAU_FF = 0.0
 
@@ -118,7 +118,8 @@ def read_state(ctrl: MotorControl, motor: Motor):
 # 공식 프로토콜 기준 피드백 프레임 ERR 코드. motor/DM_CAN.py 가 이걸 파싱해서
 # Motor.getError() 로 꺼낼 수 있게 해둔 뒤로 여기서 사람이 읽을 이름으로 변환.
 _FAULT_NAMES = {
-    0x0: "정상",
+    0x0: "0 (펌웨어에 따라 정상/비활성)",
+    0x1: "활성",
     0x8: "과전압",
     0x9: "저전압",
     0xA: "과전류",
@@ -134,9 +135,9 @@ def fault_name(code: int) -> str:
 
 
 def print_fault_if_any(motor: Motor, label: str = ""):
-    """고장 코드가 0이 아니면 경고로 출력. 정상이면 아무것도 안 찍음."""
+    """Normal-state 0/1 are reported separately from hardware faults."""
     err = motor.getError()
-    if err:
+    if err not in (0, 1):
         prefix = f"[{label}] " if label else ""
         print(f"  [WARN] {prefix}모터 고장 코드 감지: {fault_name(err)} (0x{err:X}) "
               f"— 토크가 안 나가거나 이상 동작할 수 있음. disable 후 재enable, "

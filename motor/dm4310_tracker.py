@@ -1,385 +1,318 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-DM-J4310-2EC 2축(Yaw-Pitch) CAN MIT모드 대상 추적 모터 제어 모듈.
+"""DM4310 control and feedback diagnostics; all public angles are right/up +.
 
-카메라/동물 검출은 외부 코드가 담당하고, 이 모듈은 대상의 화면 좌표를
-모터 명령으로 바꾼다. tracker.update(x, y)를 검출된 프레임마다 호출한다.
-
-클로즈드 루프 설계 (호스트 측 피드백)
-  이전 버전은 호스트가 내부적으로 시뮬레이션한(quintic spline) 위치를 기준으로
-  다음 목표를 계산했다 — 모터가 실제로 그 위치에 있는지는 확인하지 않는 사실상
-  피드포워드 스트리밍이었다.
-
-  이 버전은 매 CAN 사이클마다 모터가 응답으로 돌려주는 실제 위치/속도/토크
-  (motor/DM_CAN.py 의 controlMIT() 가 전송 직후 자동으로 recv() 해서 파싱)를
-  self._current 로 읽어와서 다음 목표 계산의 "현재값"으로 사용한다.
-  목표값(self._target)은 검출 루프가 준 좌표를 그대로(증분 스텝만큼) 반영하며,
-  더 이상 호스트 쪽에서 quintic spline 등으로 궤적을 깎지 않는다 — 부드러움은
-  MIT 모드의 Kp/Kd 임피던스(스프링-댐퍼)가 물리적으로 담당한다.
-
-한 사이클(1000Hz) 동작
-  1) self._target 을 그대로 controlMIT(q_des=target, dq_des=0, Kp, Kd, tau_ff) 로 전송
-  2) 전송 직후 모터 응답으로 갱신된 실제 위치/속도/토크를 self._current 에 저장
-  3) go_center() 로 인한 중앙 복귀 램프가 진행 중이면 target 을 선형 보간
-
-update() 동작 (검출 루프, ~30Hz)
-  픽셀 오차 → 각도 스텝(rad) 환산 → target = 실제 현재 위치(self._current) + 스텝
-  (스프링-댐퍼 특성상 target 이 계단형으로 튀어도 실제 움직임은 부드럽게 수렴함)
-
-준비물
-  - Damiao 전용 USB-CAN 동글, /dev/ttyUSBx 로 연결 (motor/DM_CAN.py 참고, 921600 baud)
-  - 두 모터의 CAN ID가 Yaw=0x01, Pitch=0x02(MasterID 0x11/0x12)로 설정돼
-    있어야 함 — tools/actuator_conn_test.py 의 "CAN ID 찾기/할당"(--step id)로
-    Windows 전용 소프트웨어 없이 CAN 통신만으로 확인/변경 가능
-  - MIT 모드는 __init__() 에서 매번 자동으로 전환(switchControlMode)하므로
-    별도 사전 설정 불필요 (새 모터는 기본값이 MIT이지만, 혹시 다른 모드로
-    저장된 적이 있어도 이 초기화 과정에서 MIT로 맞춰짐)
-
-주의 (실제 하드웨어 투입 전 반드시 확인)
-  - YAW_RANGE_RAD / PITCH_RANGE_RAD 는 기구적으로 안전한 실제 가동범위로 조정할 것
-  - RAD_PER_PIXEL_X/Y 는 Arducam B0538C 렌즈 스펙(HFOV/VFOV)으로 이론 유도한
-    값이며(아래 상수 정의부 주석 참고), 짐벌 기어비(모터-카메라 간 감속비)는
-    반영되어 있지 않다. 기어비가 1:1이 아니면 그 비율만큼 곱해서 보정할 것,
-    실측 후 미세조정 필요
-  - KP/KD 는 낮은 값부터 시작해서 진동 없이 안정적으로 추종할 때까지 올릴 것
-  - 시리얼 왕복 특성상 self._current 는 최대 한두 사이클(<2ms) 지연될 수 있음
+Only this adapter converts logical coordinates to motor encoder coordinates.
+The 500 Hz PD stream continues at a fixed goal during audio/observation.
 """
 
+from __future__ import annotations
+
+import logging
 import math
-import time
 import threading
+import time
 
 import serial
 
 from motor.DM_CAN import Motor, MotorControl, DM_Motor_Type, Control_Type
+from motor.config import (
+    AXES as AXES,
+    DEVICENAME as DEVICENAME,
+    BAUDRATE as BAUDRATE,
+    CAN_ID_YAW as CAN_ID_YAW,
+    CAN_ID_PITCH as CAN_ID_PITCH,
+    MASTER_ID_YAW as MASTER_ID_YAW,
+    MASTER_ID_PITCH as MASTER_ID_PITCH,
+    FRAME_W as FRAME_W,
+    FRAME_H as FRAME_H,
+    CENTER_X as CENTER_X,
+    CENTER_Y as CENTER_Y,
+    HFOV_DEG as HFOV_DEG,
+    VFOV_DEG as VFOV_DEG,
+    RAD_PER_PIXEL_X as RAD_PER_PIXEL_X,
+    RAD_PER_PIXEL_Y as RAD_PER_PIXEL_Y,
+    MOTOR_SIGN as MOTOR_SIGN,
+    YAW_RANGE_RAD as YAW_RANGE_RAD,
+    PITCH_RANGE_RAD as PITCH_RANGE_RAD,
+    RANGE_RAD as RANGE_RAD,
+    KP_YAW as KP_YAW,
+    KP_PITCH as KP_PITCH,
+    KD_YAW as KD_YAW,
+    KD_PITCH as KD_PITCH,
+    KP as KP,
+    KD as KD,
+    TAU_FF_YAW as TAU_FF_YAW,
+    TAU_FF_PITCH as TAU_FF_PITCH,
+    RAW_TAU_FF as RAW_TAU_FF,
+    CONTROL_FREQ as CONTROL_FREQ,
+    MAX_STEP_RAD as MAX_STEP_RAD,
+    DEADZONE_PX as DEADZONE_PX,
+    DEFAULT_YAW_DEG as DEFAULT_YAW_DEG,
+    DEFAULT_PITCH_DEG as DEFAULT_PITCH_DEG,
+    GO_CENTER_DURATION as GO_CENTER_DURATION,
+    HEALTHY_STATUS_CODES as HEALTHY_STATUS_CODES,
+    FEEDBACK_TIMEOUT_SECONDS as FEEDBACK_TIMEOUT_SECONDS,
+    STARTUP_TIMEOUT_SECONDS as STARTUP_TIMEOUT_SECONDS,
+    to_motor as to_motor,
+    from_motor as from_motor,
+    clamp_angle as clamp_angle,
+)
 
-# ============================================================
-# 1) 연결 설정
-# ============================================================
-
-# 실측(lsusb/ls /dev/serial/by-id): Damiao 동글이 "HDSC CDC Device"로 USB
-# CDC-ACM 클래스로 잡혀 /dev/ttyACM0 로 인식됨 (USB-Serial 칩 종류에 따라
-# ttyUSB 대신 ttyACM 으로 뜨는 경우) — 이 머신 기준값이니 다른 PC에 꽂으면
-# ls /dev/ttyUSB* /dev/ttyACM* 로 다시 확인할 것.
-DEVICENAME = "/dev/ttyACM0"
-BAUDRATE   = 921600
-
+logger = logging.getLogger(__name__)
 MOTOR_TYPE = DM_Motor_Type.DM4310
 
-CAN_ID_YAW      = 0x01
-CAN_ID_PITCH    = 0x02
-MASTER_ID_YAW   = 0x11
-MASTER_ID_PITCH = 0x12
 
-AXES = ("yaw", "pitch")
-
-# ============================================================
-# 2) 화면 / 추적 파라미터
-# ============================================================
-
-# 검출기가 넘겨주는 좌표가 기준으로 삼는 해상도.
-# Arducam B0538C 목표 캡처 해상도(2592x1944)와 동일하다. 다른 해상도로
-# 검출한 경우 호출자가 이 좌표계로 스케일해야 한다.
-FRAME_W, FRAME_H   = 2592, 1944
-CENTER_X, CENTER_Y = FRAME_W // 2, FRAME_H // 2
-
-# ------------------------------------------------------------
-# 픽셀 오차 → 목표 각도 스텝(rad) 환산계수 — 이론적 유도 (Arducam B0538C 렌즈 스펙 기준)
-# ------------------------------------------------------------
-# 렌즈 스펙 (핀홀/레티리니어 모델의 왜곡을 무시한 근사에 사용):
-#   대각 화각 DFOV = 95°, 수평 화각 HFOV = 82°, 수직 화각 VFOV = 66°
-#   초점거리 EFL = 3.6mm, F수 = F2.8, 픽셀 피치 = 2.2µm (센서: OG05B1B)
-#
-# 레티리니어 렌즈는 광축에서 x만큼 떨어진 점의 각도가 atan(x/f) 이고,
-# 제어 목표가 대상을 화면 중앙 근처로 유지하는 것이라 x가 작을 때
-# atan(x/f) ≈ x/f 로 선형 근사가 잘 맞는다. 화면 전체 화각(FOV)이 스펙으로
-# 주어졌으므로, 화면 전체에 각도가 픽셀에 선형 비례한다고 가정하면:
-#
-#   RAD_PER_PIXEL_X = radians(HFOV) / FRAME_W   (가로 → Yaw)
-#   RAD_PER_PIXEL_Y = radians(VFOV) / FRAME_H   (세로 → Pitch)
-#
-# 교차검증(초점거리·픽셀피치 기반 광축 중심 국소 민감도 dθ/dx = 1/f):
-#   pixel_pitch(0.0022mm) / EFL(3.6mm) ≈ 0.000611 rad/px
-#   → 아래 두 값과 10~20% 이내로 일치해 FOV 기반 근사가 타당함을 확인.
-#   (완전히 같지 않은 건 렌즈 왜곡·FOV 정의 차이 때문 — 실제 튜닝 시 미세조정 필요)
-HFOV_DEG = 28.0 #30  25
-VFOV_DEG = 20.0 #25 16
-
-RAD_PER_PIXEL_X = math.radians(HFOV_DEG) / FRAME_W   # ≈ 0.000552 rad/px, err_x → Yaw
-RAD_PER_PIXEL_Y = math.radians(VFOV_DEG) / FRAME_H   # ≈ 0.000593 rad/px, err_y → Pitch
-
-# 이론상 유도(위 주석 참고)로는 SIGN = -1이 수렴 방향이지만, 실기로
-# 두 축을 번갈아 테스트한 결과 SIGN = +1일 때 실제로 대상을 따라가며
-# 중앙으로 수렴함을 확인했다(err 정의·좌표계 구현의 다른 부호 요소와
-# 상쇄되는 것으로 추정). 실측으로 검증·확정된 값이므로 임의로 바꾸지 말 것.
-SIGN_YAW   = 1
-SIGN_PITCH = 1
-
-DEADZONE_PX  = 0
-MAX_STEP_RAD = 0.6   # update() 한 번에 허용할 최대 목표각 이동량 — 튀는 검출값 방어
-
-# 짐벌 가동범위 (중앙 0 rad 기준, 실제 기구 한계에 맞춰 조정할 것)
-YAW_RANGE_RAD   = 1.2
-PITCH_RANGE_RAD = 0.6
-
-_RANGE_RAD = {"yaw": YAW_RANGE_RAD, "pitch": PITCH_RANGE_RAD}
-
-# ============================================================
-# 3) MIT 모드 임피던스 게인 — Yaw/Pitch 축별로 분리
-# ============================================================
-#   torque = Kp*(q_des - q) + Kd*(dq_des - dq) + tau_ff
-#   낮은 값에서 시작해 진동 없이 잘 따라올 때까지 올릴 것 (DM4310 Kp 0~500, Kd 0~5)
-#   호스트 쪽 궤적 스무딩이 없어졌으므로, 부드러움은 전적으로 이 두 값이 담당한다.
-#   Yaw 는 수평으로 회전해 중력 영향이 없지만, Pitch 는 자세에 따라 자중
-#   토크가 걸리므로 게인과 tau_ff(피드포워드)를 축별로 따로 둔다 — Yaw 는
-#   항상 tau_ff=0, Pitch 만 TAU_FF_PITCH 로 중력보상 토크를 넣을 수 있다.
-
-KP_YAW   = 30.0 #55
-KD_YAW   = 1.8 #3
-KP_PITCH = 30.0 #55
-KD_PITCH = 1.8 # 3.2
-
-TAU_FF_YAW   = 0.0   # Yaw 는 피드포워드 보정 없음 (고정)
-TAU_FF_PITCH = 2.3   # Pitch 자중 보상 토크 — steady-state 오차 보정용, 필요시 이 값만 조정
-
-_KP     = {"yaw": KP_YAW,   "pitch": KP_PITCH}
-_KD     = {"yaw": KD_YAW,   "pitch": KD_PITCH}
-_TAU_FF = {"yaw": TAU_FF_YAW, "pitch": TAU_FF_PITCH}
-
-# go_center() 전용 중앙 복귀 램프 지속 시간(초) — 선형 보간
-GO_CENTER_DURATION = 2.0
-
-# 궤적 스트리밍 스레드 목표 주파수(Hz). 실제 달성 주파수는 USB-CAN 동글의
-# 시리얼 처리량에 따라 달라짐 — get_actual_freq() 로 실측 가능.
-CONTROL_FREQ = 500
+class MotorFault(RuntimeError):
+    pass
 
 
-def _clamp(v, lo, hi):
-    return max(lo, min(hi, v))
+class FeedbackMotor(Motor):
+    """Timestamp actual feedback, not requests or cached default positions."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self._feedback_lock = threading.Lock()
+        self._feedback = None
+
+    def recv_data(self, q, dq, tau, err=0):
+        super().recv_data(q, dq, tau, err)
+        with self._feedback_lock:
+            self._feedback = (time.monotonic(), q, dq, tau, err)
+
+    def snapshot(self):
+        with self._feedback_lock:
+            return self._feedback
+
+
+def checked_feedback(axis, sample, now):
+    if sample is None:
+        raise MotorFault(f"{axis}: no feedback")
+    received_at, q, dq, torque, status = sample
+    if now - received_at > FEEDBACK_TIMEOUT_SECONDS:
+        raise MotorFault(f"{axis}: stale feedback ({now - received_at:.3f}s)")
+    # Firmware-specific normal states are configured separately from fault codes.
+    if status not in HEALTHY_STATUS_CODES:
+        raise MotorFault(f"{axis}: motor status 0x{status:X}")
+    if not all(math.isfinite(v) for v in (q, dq, torque)):
+        raise MotorFault(f"{axis}: non-finite feedback")
+    return tuple(from_motor(axis, v) for v in (q, dq, torque))
 
 
 class Tracker:
-    def __init__(self, devicename: str = DEVICENAME, baudrate: int = BAUDRATE):
-        self._serial = serial.Serial(devicename, baudrate, timeout=0.001)
-        self._ctrl = MotorControl(self._serial)
-
-        self._motor = {
-            "yaw":   Motor(MOTOR_TYPE, CAN_ID_YAW,   MASTER_ID_YAW),
-            "pitch": Motor(MOTOR_TYPE, CAN_ID_PITCH, MASTER_ID_PITCH),
-        }
-        for axis in AXES:
-            self._ctrl.addMotor(self._motor[axis])
-
-        # CTRL_MODE(RID=10) 레지스터가 MIT(1)가 아닌 다른 모드로 저장돼
-        # 있으면 controlMIT() 프레임을 보내도 모터가 반응하지 않는다.
-        # 새 모터는 기본값이 MIT이지만, 이전에 다른 모드로 쓰고 저장된 적이
-        # 있을 수 있으니 매번 명시적으로 MIT로 전환한다 (세션 한정 전환 —
-        # save_motor_param() 을 호출하지 않으므로 플래시에는 저장되지 않고,
-        # 이 초기화 시점에만 확실히 MIT로 맞춰두는 안전장치).
-        for axis in AXES:
-            if not self._ctrl.switchControlMode(self._motor[axis], Control_Type.MIT):
-                print(f"[WARN] {axis} 축을 MIT 모드로 전환했는지 확인할 수 없음 "
-                      f"— controlMIT() 명령에 반응이 없을 수 있음")
-
-        # 모터 활성화
-        for axis in AXES:
-            self._ctrl.enable(self._motor[axis])
-
-        # 실제 현재 각도를 읽어 초기 목표/현재값으로 사용 (급격한 점프 방지)
-        init_pos = {}
-        for axis in AXES:
-            self._ctrl.refresh_motor_status(self._motor[axis])
-            init_pos[axis] = _clamp(
-                self._motor[axis].getPosition(), -_RANGE_RAD[axis], _RANGE_RAD[axis])
-
+    def __init__(self, devicename=DEVICENAME, baudrate=BAUDRATE):
         self._lock = threading.Lock()
-        # 실측값 (모터 응답으로 매 사이클 갱신): {axis: (pos, vel, tau)}
-        self._current = {axis: (init_pos[axis], 0.0, 0.0) for axis in AXES}
-        # 목표값 (update() / go_center() 가 갱신): {axis: pos}
-        self._target = dict(init_pos)
-        # 중앙 복귀 램프 진행 상태 (None 이면 비활성)
-        self._ramp = None
-
-        # 실측 제어주파수 (디버깅/모니터링용)
-        self._actual_freq = 0.0
-        self._freq_lock = threading.Lock()
-
-        # update() 가 실제로 호출되는 실측 Hz(= 카메라/검출 루프가 새 목표
-        # 좌표를 넘겨주는 빈도) — 제어 스레드 Hz와는 완전히 다른 수치다.
-        self._update_count = 0
-        self._update_window_t0 = time.time()
-        self._update_actual_freq = 0.0
-        self._update_freq_lock = threading.Lock()
-
-        # 제어 스트리밍 스레드 시작
         self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._control_thread, daemon=True)
-        self._thread.start()
+        self._thread = None
+        self._serial = self._ctrl = None
+        self._closed = False
+        self._fault = None
+        self._motor = {}
+        self._ramp = None
+        self._actual_freq = self._update_actual_freq = 0.0
+        self._update_count = 0
+        self._update_window_t0 = time.monotonic()
+        try:
+            self._serial = serial.Serial(
+                devicename, baudrate, timeout=0.001, write_timeout=0.1
+            )
+            self._ctrl = MotorControl(self._serial)
+            for axis, can_id, master in zip(
+                AXES, (CAN_ID_YAW, CAN_ID_PITCH), (MASTER_ID_YAW, MASTER_ID_PITCH)
+            ):
+                motor = FeedbackMotor(MOTOR_TYPE, can_id, master)
+                self._motor[axis] = motor
+                self._ctrl.addMotor(motor)
+                if not self._ctrl.switchControlMode(motor, Control_Type.MIT):
+                    raise MotorFault(f"{axis}: MIT mode not confirmed")
+            for motor in self._motor.values():
+                self._ctrl.enable(motor)
+            self._current = self._wait_for_feedback()
+            for axis in AXES:
+                if abs(self._current[axis][0]) > RANGE_RAD[axis]:
+                    raise MotorFault(f"{axis}: startup angle outside configured range")
+            self._target = {axis: self._current[axis][0] for axis in AXES}
+            self._thread = threading.Thread(target=self._control_thread, daemon=True)
+            self._thread.start()
+        except BaseException:
+            self.close()
+            raise
 
-    # --------------------------------------------------------
-    # 제어 스트리밍 스레드 (1000Hz 목표)
-    # --------------------------------------------------------
+    def _wait_for_feedback(self):
+        deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
+        last_error = None
+        while time.monotonic() < deadline:
+            for motor in self._motor.values():
+                self._ctrl.refresh_motor_status(motor)
+            try:
+                return {
+                    axis: checked_feedback(axis, motor.snapshot(), time.monotonic())
+                    for axis, motor in self._motor.items()
+                }
+            except MotorFault as error:
+                last_error = error
+                time.sleep(0.01)
+        raise MotorFault(f"startup feedback timeout: {last_error}")
+
+    def _disable(self):
+        if self._ctrl is not None:
+            for axis, motor in self._motor.items():
+                try:
+                    self._ctrl.disable(motor)
+                except Exception:
+                    logger.exception("%s: failed to send disable", axis)
 
     def _control_thread(self):
-        """
-        CONTROL_FREQ Hz 로 self._target 을 그대로 MIT 프레임에 실어 보내고,
-        전송 직후 모터 응답(실제 위치/속도/토크)을 self._current 에 반영한다.
-
-        고정 dt 로 sleep 하지 않고 다음 목표 시각(next_t)을 누적해 두어
-        한 사이클이 늦어져도 위상이 계속 밀리지 않도록 함(잉크리멘탈 스케줄링).
-        """
-        dt = 1.0 / CONTROL_FREQ
-        next_t = time.time()
-        tick_count = 0
-        window_t0 = next_t
-
-        while not self._stop_event.is_set():
-            t_now = time.time()
-
-            with self._lock:
-                if self._ramp is not None:
-                    tau = min((t_now - self._ramp['t0']) / self._ramp['T'], 1.0)
-                    for axis in AXES:
-                        start = self._ramp['start'][axis]
-                        goal  = self._ramp['goal'][axis]
-                        self._target[axis] = start + (goal - start) * tau
-                    if tau >= 1.0:
-                        self._ramp = None
-                q_des = dict(self._target)
-
-            for axis in AXES:
-                goal = _clamp(q_des[axis], -_RANGE_RAD[axis], _RANGE_RAD[axis])
-                motor = self._motor[axis]
-
-                self._ctrl.controlMIT(motor, _KP[axis], _KD[axis], goal, 0.0, _TAU_FF[axis])
-
-                # controlMIT() 이 전송 직후 recv() 해서 갱신해 둔 실측값을 반영
+        next_t = window_t0 = time.monotonic()
+        ticks = 0
+        try:
+            while not self._stop_event.is_set():
+                now = time.monotonic()
+                current = {
+                    axis: checked_feedback(axis, m.snapshot(), now)
+                    for axis, m in self._motor.items()
+                }
                 with self._lock:
-                    self._current[axis] = (
-                        motor.getPosition(), motor.getVelocity(), motor.getTorque())
+                    self._current = current
+                    if self._ramp is not None:
+                        r = self._ramp
+                        fraction = min((now - r["t0"]) / r["duration"], 1.0)
+                        self._target = {
+                            a: r["start"][a] + fraction * (r["goal"][a] - r["start"][a])
+                            for a in AXES
+                        }
+                        if fraction >= 1:
+                            self._ramp = None
+                    goals = dict(self._target)
+                for axis in AXES:
+                    self._ctrl.controlMIT(
+                        self._motor[axis],
+                        KP[axis],
+                        KD[axis],
+                        to_motor(axis, clamp_angle(axis, goals[axis])),
+                        0.0,
+                        RAW_TAU_FF[axis],
+                    )
+                ticks += 1
+                if now - window_t0 >= 1:
+                    self._actual_freq = ticks / (now - window_t0)
+                    ticks, window_t0 = 0, now
+                next_t += 1.0 / CONTROL_FREQ
+                self._stop_event.wait(max(0, next_t - time.monotonic()))
+                next_t = max(next_t, time.monotonic())
+        except Exception as error:
+            self._fault = f"{type(error).__name__}: {error}"
+            logger.exception("motor control fault")
+            self._stop_event.set()
+            self._disable()
 
-            tick_count += 1
-            if tick_count >= CONTROL_FREQ:
-                now = time.time()
-                with self._freq_lock:
-                    self._actual_freq = tick_count / max(now - window_t0, 1e-9)
-                tick_count = 0
-                window_t0 = now
+    def health(self):
+        now = time.monotonic()
+        detail = {a: m.snapshot() for a, m in self._motor.items()}
+        fault = self._fault
+        if not fault:
+            try:
+                for a, sample in detail.items():
+                    checked_feedback(a, sample, now)
+                if self._thread is None or not self._thread.is_alive():
+                    raise MotorFault("control thread is not running")
+            except MotorFault as error:
+                fault = str(error)
+        return {
+            "ok": not fault,
+            "fault": fault,
+            "feedback_age": {
+                a: None if s is None else now - s[0] for a, s in detail.items()
+            },
+            "status": {a: None if s is None else s[4] for a, s in detail.items()},
+        }
 
-            next_t += dt
-            sleep_time = next_t - time.time()
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            else:
-                # 이번 사이클이 늦었으면 기준 시각을 현재로 재설정해
-                # 이후 프레임이 연달아 몰아치지 않게 함
-                next_t = time.time()
-
-    def get_actual_freq(self) -> float:
-        """직전 1초(대략) 동안 실측된 제어 스레드 틱(= 제어주기) 주파수(Hz)."""
-        with self._freq_lock:
-            return self._actual_freq
-
-    def get_can_tx_freq(self) -> float:
-        """controlMIT() 가 실제로 CAN-USB 시리얼로 보낸(송신+recv) 실측
-        Hz — 축 2개가 각각 호출하므로 보통 get_actual_freq() 의 약 2배."""
-        return self._ctrl.get_tx_freq()
-
-    def get_rx_freq(self, axis: str) -> float:
-        """해당 축(yaw/pitch) 액추에이터로부터 실제로 유효한 피드백 프레임을
-        받은 실측 Hz. get_can_tx_freq() 보다 낮다면 그 차이가 패킷 손실률."""
-        return self._motor[axis].get_rx_freq()
-
-    def get_update_freq(self) -> float:
-        """update() 가 유효한 좌표(= None 아님)로 실제 호출되는 실측 Hz —
-        카메라/YOLO 검출 루프가 새 목표 좌표를 넘겨주는 빈도(카메라 자체
-        fps·YOLO 추론 시간에 좌우됨). target_x/y 가 None 인 호출(검출 실패)
-        은 세지 않는다 — "검출기가 실제로 타겟을 준 빈도"를 보려는 것이다."""
-        with self._update_freq_lock:
-            return self._update_actual_freq
-
-    def _mark_update(self):
-        with self._update_freq_lock:
-            self._update_count += 1
-            now = time.time()
-            elapsed = now - self._update_window_t0
-            if elapsed >= 1.0:
-                self._update_actual_freq = self._update_count / elapsed
-                self._update_count = 0
-                self._update_window_t0 = now
-
-    # --------------------------------------------------------
-    # 핵심 제어 루프: 검출 루프에서 매 프레임 호출
-    # --------------------------------------------------------
+    def assert_healthy(self):
+        health = self.health()
+        if not health["ok"]:
+            raise MotorFault(health["fault"])
 
     def update(self, target_x, target_y):
-        """
-        대상 픽셀 좌표(검출 프레임마다) → 목표 각도 스텝 계산 → target 갱신.
-
-        target 은 항상 '모터가 실제로 보고한 현재 위치'(self._current)를
-        기준으로 계산한다. 호스트가 시뮬레이션한 값이 아니라 실측값을 쓰므로
-        모터가 밀리거나 막혀도 다음 보정이 실제 상태 기준으로 이루어진다.
-        실제 모터 전송은 _control_thread(1000Hz) 가 담당하므로 이 함수는
-        블로킹 없음.
-        """
         if target_x is None or target_y is None:
             return
-        self._mark_update()
-
-        err_x = CENTER_X - target_x
-        err_y = CENTER_Y - target_y
-
-        if abs(err_x) < DEADZONE_PX:
-            err_x = 0
-        if abs(err_y) < DEADZONE_PX:
-            err_y = 0
-
-        if err_x == 0 and err_y == 0:
-            return
-
-        step_yaw   = _clamp(SIGN_YAW   * err_x * RAD_PER_PIXEL_X, -MAX_STEP_RAD, MAX_STEP_RAD)
-        step_pitch = _clamp(SIGN_PITCH * err_y * RAD_PER_PIXEL_Y, -MAX_STEP_RAD, MAX_STEP_RAD)
-
+        self.assert_healthy()
+        if not all(math.isfinite(v) for v in (target_x, target_y)):
+            raise ValueError("target coordinates must be finite")
+        err_x, err_y = target_x - CENTER_X, CENTER_Y - target_y
+        if abs(err_x) <= DEADZONE_PX:
+            err_x = 0.0
+        if abs(err_y) <= DEADZONE_PX:
+            err_y = 0.0
+        steps = {"yaw": err_x * RAD_PER_PIXEL_X, "pitch": err_y * RAD_PER_PIXEL_Y}
         with self._lock:
-            self._ramp = None   # 새 검출 좌표가 들어오면 중앙 복귀 램프는 취소
+            self._ramp = None
+            # Even at zero image error replace the previous goal with current feedback.
+            for axis in AXES:
+                step = max(-MAX_STEP_RAD, min(MAX_STEP_RAD, steps[axis]))
+                self._target[axis] = clamp_angle(axis, self._current[axis][0] + step)
+            self._update_count += 1
+            now = time.monotonic()
+            if now - self._update_window_t0 >= 1:
+                self._update_actual_freq = self._update_count / (
+                    now - self._update_window_t0
+                )
+                self._update_count, self._update_window_t0 = 0, now
 
-            cur_yaw,   _, _ = self._current["yaw"]
-            cur_pitch, _, _ = self._current["pitch"]
+    def hold(self):
+        self.assert_healthy()
+        with self._lock:
+            self._ramp = None
+            self._target = {a: self._current[a][0] for a in AXES}
 
-            self._target["yaw"]   = _clamp(cur_yaw   + step_yaw,   -YAW_RANGE_RAD,   YAW_RANGE_RAD)
-            self._target["pitch"] = _clamp(cur_pitch + step_pitch, -PITCH_RANGE_RAD, PITCH_RANGE_RAD)
+    def go_to(self, yaw_rad=0.0, pitch_rad=0.0, duration=GO_CENTER_DURATION):
+        self.assert_healthy()
+        if not math.isfinite(duration) or duration < 0:
+            raise ValueError("duration must be finite and nonnegative")
+        goal = {
+            "yaw": clamp_angle("yaw", yaw_rad),
+            "pitch": clamp_angle("pitch", pitch_rad),
+        }
+        with self._lock:
+            if duration == 0:
+                self._target, self._ramp = goal, None
+            else:
+                self._ramp = dict(
+                    t0=time.monotonic(),
+                    duration=duration,
+                    start={a: self._current[a][0] for a in AXES},
+                    goal=goal,
+                )
 
-    def get_state(self, axis: str):
-        """axis('yaw'|'pitch') 의 실측 (pos_rad, vel_rad_s, torque_nm) 반환."""
+    def go_center(self):
+        self.go_to()
+
+    def go_default(self):
+        self.go_to(math.radians(DEFAULT_YAW_DEG), math.radians(DEFAULT_PITCH_DEG))
+
+    def get_state(self, axis):
         with self._lock:
             return self._current[axis]
 
-    def get_yaw_angle_rad(self) -> float:
-        """Yaw 모터의 실측 현재 각도(rad, 중앙=0)를 반환 (목표값이 아닌 실제값)."""
-        with self._lock:
-            return self._current["yaw"][0]
+    def get_yaw_angle_rad(self):
+        return self.get_state("yaw")[0]
 
-    def go_to(self, yaw_rad: float = 0.0, pitch_rad: float = 0.0,
-              duration: float = GO_CENTER_DURATION):
-        """두 모터를 선형 램프로 임의의 목표(rad)까지 천천히 이동."""
-        goal = {
-            "yaw":   _clamp(yaw_rad,   -YAW_RANGE_RAD,   YAW_RANGE_RAD),
-            "pitch": _clamp(pitch_rad, -PITCH_RANGE_RAD, PITCH_RANGE_RAD),
-        }
-        t_now = time.time()
-        with self._lock:
-            start = {axis: self._current[axis][0] for axis in AXES}
-            self._ramp = {'t0': t_now, 'T': duration, 'start': start, 'goal': goal}
+    def get_actual_freq(self):
+        return self._actual_freq
 
-    def go_center(self):
-        """두 모터를 선형 램프로 중앙(0 rad)까지 천천히 복귀."""
-        self.go_to(yaw_rad=0.0, pitch_rad=0.0)
+    def get_can_tx_freq(self):
+        return self._ctrl.get_tx_freq()
+
+    def get_rx_freq(self, axis):
+        return self._motor[axis].get_rx_freq()
+
+    def get_update_freq(self):
+        return self._update_actual_freq
 
     def close(self):
-        """종료 시 스레드 정지 후 모터 비활성화, 시리얼 포트 닫기."""
+        if self._closed:
+            return
+        self._closed = True
         self._stop_event.set()
-        self._thread.join(timeout=1.0)
-        for axis in AXES:
-            self._ctrl.disable(self._motor[axis])
-        self._serial.close()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        self._disable()
+        if self._serial is not None:
+            self._serial.close()
