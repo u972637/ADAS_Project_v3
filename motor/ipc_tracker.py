@@ -37,10 +37,11 @@ class MotorFault(RuntimeError):
 
 def _motor_worker(cmd_queue, status_conn, ready_event, devicename, baudrate):
     """Runs in the child process. Owns the real Tracker exclusively."""
-    from motor.dm4310_tracker import Tracker, MotorFault as _RealMotorFault
+    from motor.dm4310_tracker import MotorFault as _RealMotorFault
+    from motor.factory import create_tracker
 
     try:
-        tracker = Tracker(devicename=devicename, baudrate=baudrate)
+        tracker = create_tracker(devicename=devicename, baudrate=baudrate)
     except Exception as error:
         status_conn.send({"startup_error": f"{type(error).__name__}: {error}"})
         ready_event.set()
@@ -98,7 +99,8 @@ def _dispatch(tracker, cmd):
         _, yaw_rad, pitch_rad, duration = cmd
         tracker.go_to(yaw_rad=yaw_rad, pitch_rad=pitch_rad, duration=duration)
     elif kind == "go_default":
-        tracker.go_default()
+        _, duration, yaw_deg, pitch_deg = cmd
+        tracker.go_default(duration=duration, yaw_deg=yaw_deg, pitch_deg=pitch_deg)
     elif kind == "go_center":
         tracker.go_center()
     else:
@@ -211,19 +213,23 @@ class RemoteTracker:
 
     def go_to(self, yaw_rad=0.0, pitch_rad=0.0, duration=None):
         self.assert_healthy()
-        from motor.config import GO_CENTER_DURATION
+        if duration is None:
+            from motor import config
 
-        self._cmd_queue.put(
-            ("go_to", yaw_rad, pitch_rad, GO_CENTER_DURATION if duration is None else duration)
-        )
+            duration = (
+                config.TRAJECTORY_GO_CENTER_DURATION
+                if config.CONTROL_MODE == "trajectory"
+                else config.STEP_GO_CENTER_DURATION
+            )
+        self._cmd_queue.put(("go_to", yaw_rad, pitch_rad, duration))
 
     def go_center(self):
         self.assert_healthy()
         self._cmd_queue.put(("go_center",))
 
-    def go_default(self):
+    def go_default(self, duration=None, yaw_deg=None, pitch_deg=None):
         self.assert_healthy()
-        self._cmd_queue.put(("go_default",))
+        self._cmd_queue.put(("go_default", duration, yaw_deg, pitch_deg))
 
     def get_state(self, axis):
         return self._latest()["current"][axis]

@@ -135,31 +135,24 @@ def validate_model_classes(
             )
 
 
-def _best_torso_in_box(
-    box: tuple[float, float, float, float], torsos: Sequence[Detection]
+def _nearest_torso(
+    center: tuple[float, float], max_distance: float, torsos: Sequence[Detection]
 ) -> Detection | None:
-    """Best torso whose center falls inside box, same scoring as torso_matches
-    (high containment, close to box center) but for a single remembered box."""
-    x1, y1, x2, y2 = box
-    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-    size = max(math.hypot(x2 - x1, y2 - y1), 1.0)
-    best, best_score = None, -1.0
+    """Closest torso to center within max_distance pixels.
+
+    Used to bridge a momentary animal-bbox gap by distance to the last
+    KNOWN TORSO POSITION (updated every frame), not a frozen animal bbox —
+    a moving target keeps a moving search point instead of drifting outside
+    a stale window."""
+    cx0, cy0 = center
+    best, best_dist = None, max_distance
     for torso in torsos:
         if torso.area <= 0:
             continue
         tcx, tcy = torso.center
-        if not (x1 <= tcx <= x2 and y1 <= tcy <= y2):
-            continue
-        tx1, ty1, tx2, ty2 = torso.xyxy
-        intersection = max(0.0, min(x2, tx2) - max(x1, tx1)) * max(
-            0.0, min(y2, ty2) - max(y1, ty1)
-        )
-        containment = intersection / torso.area
-        if containment <= 0:
-            continue
-        score = 10.0 * containment - math.hypot(tcx - cx, tcy - cy) / size
-        if score > best_score:
-            best, best_score = torso, score
+        dist = math.hypot(tcx - cx0, tcy - cy0)
+        if dist <= best_dist:
+            best, best_dist = torso, dist
     return best
 
 
@@ -372,6 +365,7 @@ class AreaMonitor:
 
 AREA_REASON = "bbox_area_reduced"
 RAPID_MOVEMENT_REASON = "rapid_movement_detected"
+TOO_SMALL_REASON = "bbox_too_small"
 
 STATE_SEARCH = "동물 탐지중"
 STATE_BASELINE = "기준 면적 측정중"
@@ -418,6 +412,7 @@ class EscapeTracker:
         height_ratio_threshold: float = 1.0,
         distance_metric: str = "area",
         nominal_fps: float = 25.0,
+        min_bbox_height_px: float = 0.0,
     ) -> None:
         if track_lost_seconds <= 0:
             raise ValueError("track_lost_seconds must be > 0")
@@ -427,11 +422,17 @@ class EscapeTracker:
             raise ValueError("torso_speed_threshold must be > 0")
         if not math.isfinite(nominal_fps) or nominal_fps <= 0:
             raise ValueError("nominal_fps must be finite and > 0")
+        if min_bbox_height_px < 0:
+            raise ValueError("min_bbox_height_px must be >= 0")
         self.nominal_fps = nominal_fps
         self.track_lost_seconds = track_lost_seconds
         self.reselect_grace_seconds = reselect_grace_seconds
         self.torso_window_size = torso_window_size
         self.torso_speed_threshold = torso_speed_threshold
+        # Absolute floor, independent of the AreaMonitor's baseline-relative
+        # ratio check: too far away / too small to track reliably, regardless
+        # of what size it started at. 0 disables this check.
+        self.min_bbox_height_px = min_bbox_height_px
         self._area_kwargs = dict(
             baseline_seconds=area_baseline_seconds,
             smooth_seconds=area_smooth_seconds,
@@ -455,11 +456,17 @@ class EscapeTracker:
         self._excluded: dict[int, float | None] = {}
         self._frame_number = 0
         self._reselect_at: float | None = None
-        # Last frame's animal bbox for the locked target, kept so a torso
-        # still visible near that spot can be followed through a momentary
-        # ByteTrack gap (the animal box flickering off) instead of discarding
-        # the frame outright.
-        self._last_bbox: tuple[float, float, float, float] | None = None
+        # Last known (center_x, center_y, width) of the locked target's
+        # matched torso, updated every frame it's found (live match or
+        # bridged). Lets a momentary ByteTrack gap (animal box flickering
+        # off) keep following the torso near where it actually is now,
+        # rather than a frozen box from the last real sighting.
+        self._last_torso: tuple[float, float, float] | None = None
+        # Last live animal bbox width, kept separately from _last_torso so
+        # speed normalization (rapid_movement) stays anchored to the
+        # animal's own width during a bridge, matching its sensitivity on
+        # live frames instead of the (usually much smaller) torso width.
+        self._last_animal_width: float | None = None
 
     def step(
         self,
@@ -540,8 +547,8 @@ class EscapeTracker:
                 d.track_id == self.target_id for d in animals
             )
             fallback_torso = (
-                _best_torso_in_box(self._last_bbox, torsos)
-                if self._last_bbox is not None and not id_conflicted
+                _nearest_torso(self._last_torso[:2], self._last_torso[2], torsos)
+                if self._last_torso is not None and not id_conflicted
                 else None
             )
             # 동물 bbox는 이번 프레임에 어느 경우든 없다 — fallback 성공
@@ -556,7 +563,7 @@ class EscapeTracker:
                 self.target_id = None
                 self.target_class = None
                 self._lost_since = None
-                self._last_bbox = None
+                self._last_torso = self._last_animal_width = None
                 return EscapeStep(None, None, STATE_LOST, True, "tracking_lost")
             if fallback_torso is None:
                 # AI 탐지가 몇 프레임 빠지는 수준의 일시적 누락은 여기서 흡수한다
@@ -573,6 +580,7 @@ class EscapeTracker:
             matched_torso = fallback_torso
         else:
             self._lost_since = None
+            self._last_animal_width = selected.width
             ai = next(i for i, animal in enumerate(animals) if animal is selected)
             matches = torso_matches(animals, torsos)
             ti = matches.get(ai)
@@ -586,12 +594,12 @@ class EscapeTracker:
             if self._history and self._history[-1][0] != self._frame_number - 1:
                 self._history.clear()
             cx, cy = matched_torso.center
-            # 동물 bbox가 이번 프레임에 없으면(fallback) 마지막으로 알려진
-            # bbox 폭으로 속도를 정규화한다 — 창 안에서 단위를 일관되게 유지.
+            # 동물 bbox가 이번 프레임에 없으면(fallback) 마지막으로 안 동물
+            # bbox 폭으로 정규화한다 — torso 폭(보통 훨씬 작음)을 쓰면 같은
+            # 물리적 이동량도 더 "빠르게" 계산돼 급속이동 민감도가 라이브
+            # 프레임과 달라진다.
             reference_width = (
-                selected.width
-                if selected is not None
-                else self._last_bbox[2] - self._last_bbox[0]
+                selected.width if selected is not None else self._last_animal_width
             )
             self._history.append(
                 (self._frame_number, timestamp, cx, cy, reference_width)
@@ -612,6 +620,10 @@ class EscapeTracker:
                 if self._area_monitor.baseline is not None
                 else STATE_BASELINE
             )
+            # 다음 프레임(특히 동물 bbox가 빠지는 경우)의 탐색 기준점을 매
+            # 프레임 갱신 — 고정된 박스가 아니라 "마지막으로 본 torso 위치"가
+            # 대상과 같이 움직이게 한다.
+            self._last_torso = (cx, cy, matched_torso.width)
 
         if self._area_monitor.baseline is None:
             state = STATE_BASELINE
@@ -620,14 +632,21 @@ class EscapeTracker:
             self.reset_observation()
             rapid_movement = False
 
-        if selected is not None:
-            self._last_bbox = selected.xyxy
+        # Absolute floor, independent of the baseline-relative AreaMonitor
+        # ratio and of `observe` — a gimbal pan doesn't change how far away
+        # the animal actually is, so this is meaningful even while aiming.
+        too_small = (
+            selected is not None
+            and self.min_bbox_height_px > 0
+            and selected.height < self.min_bbox_height_px
+        )
 
         reasons = [
             name
             for name, fired in (
                 (AREA_REASON, area_cancel),
                 (RAPID_MOVEMENT_REASON, rapid_movement),
+                (TOO_SMALL_REASON, too_small),
             )
             if fired
         ]
@@ -640,7 +659,7 @@ class EscapeTracker:
             self.target_id = None
             self.target_class = None
             self._history.clear()
-            self._last_bbox = None
+            self._last_torso = self._last_animal_width = None
             return EscapeStep(selected, matched_torso, STATE_EXIT, True, reason)
 
         return EscapeStep(selected, matched_torso, state, False, "")
@@ -657,6 +676,6 @@ class EscapeTracker:
     def reset(self) -> None:
         self.target_id = self.target_class = None
         self._lost_since = self._reselect_at = None
-        self._last_bbox = None
+        self._last_torso = self._last_animal_width = None
         self._excluded.clear()
         self.reset_observation()

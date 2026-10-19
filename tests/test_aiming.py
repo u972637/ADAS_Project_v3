@@ -17,7 +17,7 @@ class Motor:
     def hold(self):
         pass
 
-    def go_default(self):
+    def go_default(self, duration=None, yaw_deg=None, pitch_deg=None):
         pass
 
 

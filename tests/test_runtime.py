@@ -92,11 +92,13 @@ class EntrypointTests(unittest.TestCase):
             patch("animal.camera.open_camera", return_value=Mock()),
             patch("animal.camera.CameraCapture") as capture,
             patch("motor.dm4310_tracker.Tracker") as tracker,
-            # Independent of the repo's MOTOR_PROCESS default: this test mocks
-            # Tracker in-process and cannot pickle a Mock across RemoteTracker's
-            # child process boundary.
+            # Independent of the repo's MOTOR_PROCESS/CONTROL_MODE defaults:
+            # this test mocks motor.dm4310_tracker.Tracker specifically and
+            # cannot pickle a Mock across RemoteTracker's child process
+            # boundary, nor does it mock StepTracker.
             patch("animal.settings.MOTOR_PROCESS", False),
-            patch("motor.config.GO_CENTER_DURATION", 0),
+            patch("motor.config.CONTROL_MODE", "trajectory"),
+            patch("motor.config.TRAJECTORY_GO_CENTER_DURATION", 0),
             patch("animal.runtime.RuntimeGuard") as guard,
             patch(
                 "animal.wildlife.WildlifeDeterrent.from_settings",
@@ -147,7 +149,7 @@ class EntrypointTests(unittest.TestCase):
         from tools import motor_manual_control as menu
 
         with (
-            patch.object(menu, "Tracker") as tracker,
+            patch("motor.dm4310_tracker.Tracker") as tracker,
             patch("builtins.input", return_value="0"),
             patch("builtins.print"),
         ):

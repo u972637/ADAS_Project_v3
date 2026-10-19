@@ -144,6 +144,7 @@ class WildlifeDeterrent:
                 edge_margin_px=settings.EDGE_MARGIN_PX,
                 torso_window_size=settings.TORSO_WINDOW_SIZE,
                 torso_speed_threshold=settings.TORSO_SPEED_THRESHOLD,
+                min_bbox_height_px=settings.MIN_BBOX_HEIGHT_PX,
             ),
             torso_class_id=(
                 settings.TORSO_CLASS_ID if torso_class_id is None else torso_class_id
@@ -192,8 +193,12 @@ class WildlifeDeterrent:
         with self._lock:
             return self._fault(reason)
 
-    def stop(self):
-        """Latched software stop + controlled return to default pose; resume is explicit."""
+    def stop(self, yaw_deg=None, pitch_deg=None):
+        """Latched software stop + controlled return to default pose; resume is explicit.
+
+        yaw_deg/pitch_deg override the shared default pose (motor/config.py)
+        — used for the program-exit pose, distinct from a mid-session stop.
+        """
         with self._lock:
             self.phase = Phase.STOPPED
             self._generation += 1
@@ -203,7 +208,7 @@ class WildlifeDeterrent:
                 self._hold()
                 self.player.stop()
                 if self.camera:
-                    self.camera.home()
+                    self.camera.home(yaw_deg=yaw_deg, pitch_deg=pitch_deg)
             except Exception as error:
                 return self._fault(f"stop_failed: {error}")
             return self._event("stopped_returning_to_default")
@@ -352,7 +357,14 @@ class WildlifeDeterrent:
         # Termination is authoritative; never fall through to aim or audio on this frame.
         if step.terminated:
             self.player.stop()
-            self._hold()
+            self._frozen_ready_since = None
+            # Slow, gentle return instead of holding in place or snapping back
+            # at the normal stop speed — the animal was just seen backing
+            # away or lost, so a sudden motion here is the opposite of what
+            # we want. A new target reaching AIM_WARNING overrides this ramp
+            # the moment camera.aim()/update() is called again.
+            if self.camera:
+                self.camera.home(duration=settings.TERMINATION_RETURN_SECONDS)
             self._clear_tracking_state()
             self.phase = Phase.SEARCH
             return self._event(step.termination_reason, step.selected)

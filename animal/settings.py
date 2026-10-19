@@ -14,6 +14,14 @@ DRY_RUN = False
 MOTOR_PROCESS = True
 HEADLESS = False
 AUDIO_PLAYER_COMMAND = None
+# Escape/lost termination while tracking: return to the shared default pose
+# (motor/config.py DEFAULT_YAW_DEG/DEFAULT_PITCH_DEG) but much slower than a
+# normal stop, so the animal isn't startled by a fast motion right after it
+# was detected backing away or lost.
+TERMINATION_RETURN_SECONDS = 8.0
+# Program exit (q/quit) returns here instead of the shared default pose.
+QUIT_YAW_DEG = 0.0
+QUIT_PITCH_DEG = 5.0
 
 CLASS_TO_AUDIO = {0: "boar", 1: "water_deer"}
 EXPECTED_MODEL_NAMES = {0: "boar", 1: "deer"}
@@ -41,6 +49,10 @@ EDGE_MARGIN_PX = 2
 TORSO_WINDOW_SIZE = 5
 TORSO_SPEED_THRESHOLD = 0.10  # widths per nominal frame = 2.5 widths/second
 TORSO_NOMINAL_FPS = 25.0  # Reference unit, NOT the measured inference FPS.
+# Absolute floor on the animal bbox's pixel height, independent of the
+# baseline-ratio check above: too far away to track reliably regardless of
+# how large it started out. 0 disables this check.
+MIN_BBOX_HEIGHT_PX = 100.0
 
 AIM_AVERAGE_FRAMES = 3
 AIM_DEADBAND_FRACTION = 0.003

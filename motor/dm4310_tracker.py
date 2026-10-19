@@ -35,21 +35,15 @@ from motor.config import (
     YAW_RANGE_RAD as YAW_RANGE_RAD,
     PITCH_RANGE_RAD as PITCH_RANGE_RAD,
     RANGE_RAD as RANGE_RAD,
-    KP_YAW as KP_YAW,
-    KP_PITCH as KP_PITCH,
-    KD_YAW as KD_YAW,
-    KD_PITCH as KD_PITCH,
-    KP as KP,
-    KD as KD,
-    TAU_FF_YAW as TAU_FF_YAW,
-    TAU_FF_PITCH as TAU_FF_PITCH,
+    TRAJECTORY_KP as KP,
+    TRAJECTORY_KD as KD,
     RAW_TAU_FF as RAW_TAU_FF,
     CONTROL_FREQ as CONTROL_FREQ,
-    MAX_STEP_RAD as MAX_STEP_RAD,
+    TRAJECTORY_MAX_STEP_RAD as MAX_STEP_RAD,
     DEADZONE_PX as DEADZONE_PX,
     DEFAULT_YAW_DEG as DEFAULT_YAW_DEG,
     DEFAULT_PITCH_DEG as DEFAULT_PITCH_DEG,
-    GO_CENTER_DURATION as GO_CENTER_DURATION,
+    TRAJECTORY_GO_CENTER_DURATION as GO_CENTER_DURATION,
     HEALTHY_STATUS_CODES as HEALTHY_STATUS_CODES,
     FEEDBACK_TIMEOUT_SECONDS as FEEDBACK_TIMEOUT_SECONDS,
     STARTUP_TIMEOUT_SECONDS as STARTUP_TIMEOUT_SECONDS,
@@ -353,8 +347,13 @@ class Tracker:
     def go_center(self):
         self.go_to()
 
-    def go_default(self):
-        self.go_to(math.radians(DEFAULT_YAW_DEG), math.radians(DEFAULT_PITCH_DEG))
+    def go_default(self, duration=None, yaw_deg=None, pitch_deg=None):
+        yaw = DEFAULT_YAW_DEG if yaw_deg is None else yaw_deg
+        pitch = DEFAULT_PITCH_DEG if pitch_deg is None else pitch_deg
+        if duration is None:
+            self.go_to(math.radians(yaw), math.radians(pitch))
+        else:
+            self.go_to(math.radians(yaw), math.radians(pitch), duration)
 
     def get_state(self, axis):
         with self._lock:

@@ -71,7 +71,8 @@ from motor.dm4310_tracker import DEVICENAME, BAUDRATE, MOTOR_TYPE
 # 기본 게인은 motor/config.py에서 가져온다. 이 도구의 각도는 raw encoder 좌표다.
 #   Kp: 위치 오차에 대한 강성(스프링) — DM4310 범위 0~500. 너무 높이면
 #       목표 도달 시 튕기거나 진동할 수 있음. 낮은 값부터 올릴 것.
-from motor.config import KP_YAW as DEFAULT_KP, KD_YAW as DEFAULT_KD
+from motor.config import TRAJECTORY_KP, TRAJECTORY_KD
+DEFAULT_KP, DEFAULT_KD = TRAJECTORY_KP["yaw"], TRAJECTORY_KD["yaw"]
 #   Kd: 속도 오차에 대한 감쇠(댐퍼) — DM4310 범위 0~5. 진동이 보이면 올릴 것.
 
 #   tau_ff: 피드포워드 토크(N·m). 중력보상 등에 쓰는 값이라 이 테스트에선 0 고정.

@@ -22,7 +22,7 @@ if TEST_DIR not in sys.path:
 
 import cv2
 
-from motor.dm4310_tracker import Tracker, FRAME_W, FRAME_H
+from motor.config import FRAME_W, FRAME_H
 # camera_test.py 는 같은 tools/ 폴더에 있는 가벼운 카메라 열기/프레임 변환
 # 유틸리티 — people/main_facetrack.py 를 그대로 import하면 ultralytics/torch 까지
 # 끌려와 무거워지므로, 카메라 관련 부분만 재사용한다.
@@ -46,7 +46,7 @@ DT = 1.0 / CONTROL_FREQ
 # 공통: q 로 정상 종료할 때 돌아갈 "숙인위치"
 # ──────────────────────────────────────────────
 BOW_YAW_DEG   = 0.0
-BOW_PITCH_DEG = -4.0
+BOW_PITCH_DEG = 5.0
 BOW_DURATION  = 1.0   # 초
 
 # ──────────────────────────────────────────────
@@ -74,7 +74,7 @@ def clamp(v, lo, hi):
 from animal.overlay import put_text_kr as put_text_kr
 
 
-def _bow_tracker(tracker: Tracker, duration: float = BOW_DURATION):
+def _bow_tracker(tracker, duration: float = BOW_DURATION):
     """q 로 정상 종료할 때 공통으로 호출 — '숙인위치'로 duration초에 걸쳐
     램프 이동시키고, 그 이동이 끝날 때까지 기다린 뒤 돌아온다."""
     print(f"[숙인위치 복귀] {duration:.1f}초 동안 yaw={BOW_YAW_DEG:.0f}°, "
@@ -119,7 +119,16 @@ def read_key_nonblocking():
 class ManualController:
     """Manual goals use the common controller instead of a second CAN implementation."""
     def __init__(self):
-        self.tracker = Tracker()
+        from animal import settings as _settings
+
+        if _settings.MOTOR_PROCESS:
+            from motor.ipc_tracker import RemoteTracker
+
+            self.tracker = RemoteTracker()
+        else:
+            from motor.factory import create_tracker
+
+            self.tracker = create_tracker()
         self.target_deg = {a: self.current_deg(a) for a in AXES}
 
     def current_deg(self, axis):
@@ -305,7 +314,9 @@ def run_auto_track():
         tracker = RemoteTracker()
         print("[OK] 연결 완료(GIL 분리 프로세스) — 창이 뜨면 손을 들어보세요.")
     else:
-        tracker = Tracker()
+        from motor.factory import create_tracker
+
+        tracker = create_tracker()
         print("[OK] 연결 완료 — 창이 뜨면 손을 들어보세요.")
 
     disp_w, disp_h = int(FRAME_W * DISPLAY_SCALE), int(FRAME_H * DISPLAY_SCALE)

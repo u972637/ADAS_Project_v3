@@ -26,7 +26,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from motor.dm4310_tracker import Tracker, FRAME_W, FRAME_H
+from motor.config import FRAME_W, FRAME_H
+from motor.factory import create_tracker
 
 STATUS_INTERVAL = 0.5  # 상태 출력 주기(초)
 
@@ -45,7 +46,7 @@ def main():
     print(f"[목표 좌표] x={x}, y={y}  (프레임 기준 {FRAME_W}x{FRAME_H})")
 
     print("[..] 모터 연결 중...")
-    tracker = Tracker()
+    tracker = create_tracker()
     print("[OK] 연결 완료 — 목표 좌표로 이동 명령을 보냈습니다.")
 
     tracker.update(x, y)

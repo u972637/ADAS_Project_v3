@@ -56,7 +56,7 @@ class Camera:
     def hold(self):
         self.holds += 1
 
-    def home(self):
+    def home(self, duration=None, yaw_deg=None, pitch_deg=None):
         self.homes += 1
 
     def frozen_ready(self):

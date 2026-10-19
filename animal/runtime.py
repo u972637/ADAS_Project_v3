@@ -40,7 +40,7 @@ class RuntimeGuard:
         elif command in ("resume", "w"):
             self.service.resume()
         elif command in ("quit", "q"):
-            self.service.stop()
+            self.service.stop(yaw_deg=settings.QUIT_YAW_DEG, pitch_deg=settings.QUIT_PITCH_DEG)
             self.quit.set()
 
     def _run(self):
@@ -132,9 +132,9 @@ def run_session(
 
                 tracker = RemoteTracker()
             else:
-                from motor.dm4310_tracker import Tracker
+                from motor.factory import create_tracker
 
-                tracker = Tracker()
+                tracker = create_tracker()
             stack.callback(tracker.close)
             service.camera = TrackerCameraController(tracker, (FRAME_W, FRAME_H))
         stack.callback(service.player.stop)
@@ -280,7 +280,10 @@ def run_session(
             pass
         finally:
             guard.close()  # No resume command may cancel the final return ramp.
-            service.stop()
+            # The program is exiting on every path that reaches here (normal
+            # 'q', Ctrl+C, or an uncaught loop error) — always land on the
+            # quit pose, not whatever a mid-session stop() last used.
+            service.stop(yaw_deg=settings.QUIT_YAW_DEG, pitch_deg=settings.QUIT_PITCH_DEG)
             # Limits may extend the requested return duration; wait for the actual plan.
             if tracker and tracker.health()["ok"]:
                 if not tracker.wait_until_complete():
