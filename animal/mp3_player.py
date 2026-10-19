@@ -1,85 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MP3 재생기 — pygame.mixer 기반 (subprocess/fork 없음)
+MP3 재생기 — subprocess(mpg123/ffplay/cvlc) 기반.
 
-pygame 미설치 시 subprocess 방식으로 자동 폴백.
-설치: pip install pygame
+애니메이션 wildlife 시나리오(animal/audio.py의 WavPlayer)와 같은 방식으로,
+외부 플레이어 프로세스를 fork해 재생한다. pygame.mixer는 쓰지 않는다 —
+첫 재생 시 오디오 장치를 여는 pygame.mixer.init() 호출이 GIL을 오래 쥐고
+있을 수 있어, 같은 프로세스의 500Hz 모터 제어 스레드를 지연시켜
+MotorFault(control loop stalled)를 유발한 적이 있다.
 """
 
 import os
-import queue
 import shutil
 import subprocess
 import threading
 from typing import Optional
 
-try:
-    import pygame
-    _HAVE_PYGAME = True
-except ImportError:
-    _HAVE_PYGAME = False
-
-
-# ──────────────────────────────────────────────
-# pygame 방식: fork 없이 백그라운드 스레드에서 재생
-# ──────────────────────────────────────────────
-
-if _HAVE_PYGAME:
-    class _MixerWorker:
-        """pygame.mixer.music 를 담당하는 싱글턴 백그라운드 스레드.
-        모든 MP3LoopPlayer 인스턴스가 공유한다.
-        """
-        _instance: Optional["_MixerWorker"] = None
-        _lock = threading.Lock()
-
-        @classmethod
-        def get(cls) -> "_MixerWorker":
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-            return cls._instance
-
-        def __init__(self):
-            pygame.mixer.pre_init(44100, -16, 2, 2048)
-            pygame.mixer.init()
-            self._q: queue.SimpleQueue = queue.SimpleQueue()
-            threading.Thread(target=self._loop, daemon=True).start()
-
-        def _loop(self):
-            while True:
-                item = self._q.get()
-                if item is None:
-                    break
-                cmd, *args = item
-                try:
-                    if cmd == "play":
-                        path, loops = args
-                        pygame.mixer.music.load(path)
-                        pygame.mixer.music.play(loops)
-                    elif cmd == "stop":
-                        pygame.mixer.music.stop()
-                except Exception as e:
-                    print(f"[WARN] pygame 오디오 오류: {e}")
-
-        def play(self, path: str, loops: int = 0):
-            """비동기 재생 요청 (즉시 반환)."""
-            self._q.put(("play", path, loops))
-
-        def stop(self):
-            self._q.put(("stop",))
-
-        def set_volume(self, val: float):
-            """볼륨 설정 (0.0 ~ 1.0). pygame.mixer.music은 스레드 안전."""
-            pygame.mixer.music.set_volume(max(0.0, min(1.0, val)))
-
-        def get_volume(self) -> float:
-            return pygame.mixer.music.get_volume()
-
-
-# ──────────────────────────────────────────────
-# MP3LoopPlayer — 공개 인터페이스
-# ──────────────────────────────────────────────
 
 class MP3LoopPlayer:
     def __init__(self, mp3_path: str, enabled: bool = True, loop: bool = True):
@@ -87,19 +23,12 @@ class MP3LoopPlayer:
         self.enabled  = enabled
         self.loop     = loop
         self._warned  = False
+        self._proc: Optional[subprocess.Popen] = None
+        self._proc_lock = threading.Lock()
+        self._cmd = self._select_command()
+        self._volume = 1.0
 
-        if _HAVE_PYGAME:
-            self._mixer = _MixerWorker.get()
-            self._proc  = None          # subprocess 폴백 미사용
-            self._proc_lock = None
-            self._cmd   = None
-        else:
-            self._mixer     = None
-            self._proc: Optional[subprocess.Popen] = None
-            self._proc_lock = threading.Lock()
-            self._cmd       = self._select_command()
-
-    # ── subprocess 폴백용 커맨드 선택 ──
+    # ── 재생 커맨드 선택 ──
 
     def _select_command(self):
         if shutil.which("mpg123"):
@@ -139,15 +68,9 @@ class MP3LoopPlayer:
         if not self.enabled or not self._check_file():
             return
 
-        if _HAVE_PYGAME:
-            loops = -1 if self.loop else 0
-            self._mixer.play(self.mp3_path, loops)
-            return
-
-        # subprocess 폴백
         if self._cmd is None:
             if not self._warned:
-                print("[WARN] mp3 재생기 없음 — pip install pygame 권장")
+                print("[WARN] mp3 재생기 없음 — mpg123/ffplay/cvlc 중 하나를 설치하세요")
                 self._warned = True
             return
 
@@ -180,11 +103,6 @@ class MP3LoopPlayer:
         threading.Thread(target=_launch, daemon=True).start()
 
     def stop(self):
-        if _HAVE_PYGAME:
-            self._mixer.stop()
-            return
-        if self._proc_lock is None:
-            return
         with self._proc_lock:
             if self._proc is None:
                 return
@@ -201,15 +119,14 @@ class MP3LoopPlayer:
         self.start(restart=True)
 
     def set_volume(self, val: float):
-        """볼륨 설정 (0.0 = 묵음, 1.0 = 최대)."""
-        if _HAVE_PYGAME and self._mixer is not None:
-            self._mixer.set_volume(val)
+        """볼륨 값만 보관한다 — 이미 띄운 외부 플레이어 프로세스의 실시간
+        볼륨 변경은 지원하지 않는다(다음 재생부터 반영하려면 플레이어별
+        커맨드에 볼륨 옵션을 추가해야 한다). people/main_facetrack.py 의
+        +/- 볼륨 키가 예외 없이 동작하도록 값만 유지해둔다."""
+        self._volume = max(0.0, min(1.0, val))
 
     def get_volume(self) -> float:
-        """현재 볼륨 반환 (0.0 ~ 1.0)."""
-        if _HAVE_PYGAME and self._mixer is not None:
-            return self._mixer.get_volume()
-        return 1.0
+        return self._volume
 
     def update(self, should_play: bool):
         if should_play:

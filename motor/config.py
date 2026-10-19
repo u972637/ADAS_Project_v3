@@ -16,7 +16,7 @@ CENTER_X, CENTER_Y = FRAME_W / 2, FRAME_H / 2
 HFOV_DEG, VFOV_DEG = 28.0, 20.0
 RAD_PER_PIXEL_X = math.radians(HFOV_DEG) / FRAME_W
 RAD_PER_PIXEL_Y = math.radians(VFOV_DEG) / FRAME_H
-MOTOR_SIGN = {"yaw": -1.0, "pitch": -1.0}
+MOTOR_SIGN = {"yaw": -1.0, "pitch": 1.0}
 YAW_RANGE_RAD, PITCH_RANGE_RAD = 1.2, 0.6
 RANGE_RAD = {"yaw": YAW_RANGE_RAD, "pitch": PITCH_RANGE_RAD}
 KP_YAW = KP_PITCH = 30.0

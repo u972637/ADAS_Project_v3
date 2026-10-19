@@ -9,7 +9,6 @@ dependencies = [
     "numpy==1.26.4",
     "opencv-python==4.10.0.84",
     "pillow>=10.0",
-    "pygame>=2.5",
     "pyserial>=3.5",
     "ruckig==0.19.4",
     "scipy>=1.10",
