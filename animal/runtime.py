@@ -14,8 +14,9 @@ import threading
 import time
 
 from animal import settings
-from animal.wildlife import WildlifeDeterrent
+from animal.wildlife import Phase, WildlifeDeterrent
 from animal.perception import validate_model_classes
+from animal.overlay import put_text_kr
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,9 @@ class RuntimeGuard:
         self._thread.join(timeout=2)
 
 
-def run(*, enable_motor=None, start_paused=None, headless=None, dry_run=None):
+def run(
+    *, enable_motor=None, start_paused=None, headless=None, dry_run=None, motor_process=None
+):
     """Run the complete production task, independently of start.sh and tools/."""
     from animal.inference import infer_detections
 
@@ -77,6 +80,7 @@ def run(*, enable_motor=None, start_paused=None, headless=None, dry_run=None):
         start_paused=start_paused,
         headless=headless,
         dry_run=dry_run,
+        motor_process=motor_process,
     )
 
 
@@ -89,6 +93,7 @@ def run_session(
     start_paused=None,
     headless=None,
     dry_run=None,
+    motor_process=None,
 ):
     """Shared camera, motor, input and cleanup loop with caller-supplied perception."""
     import cv2
@@ -104,6 +109,7 @@ def run_session(
     start_paused = settings.START_PAUSED if start_paused is None else start_paused
     headless = settings.HEADLESS if headless is None else headless
     dry_run = settings.DRY_RUN if dry_run is None else dry_run
+    motor_process = settings.MOTOR_PROCESS if motor_process is None else motor_process
     if not model_path.is_file():
         raise FileNotFoundError(model_path)
     model = YOLO(str(model_path))
@@ -121,9 +127,14 @@ def run_session(
             ),
         )
         if enable_motor and not dry_run:
-            from motor.dm4310_tracker import Tracker
+            if motor_process:
+                from motor.ipc_tracker import RemoteTracker
 
-            tracker = Tracker()
+                tracker = RemoteTracker()
+            else:
+                from motor.dm4310_tracker import Tracker
+
+                tracker = Tracker()
             stack.callback(tracker.close)
             service.camera = TrackerCameraController(tracker, (FRAME_W, FRAME_H))
         stack.callback(service.player.stop)
@@ -186,15 +197,43 @@ def run_session(
                                     color,
                                     2,
                                 )
+                            if detection.class_id == service.torso_class_id:
+                                # Every detected torso's target coordinate shows
+                                # in yellow, always -- not only the locked one.
+                                center = tuple(map(int, detection.center))
+                                cv2.circle(display, center, 8, (0, 255, 255), -1)
                         selected = service.last_escape_step
-                        if selected and not selected.terminated and selected.selected:
-                            x1, y1, x2, y2 = map(int, selected.selected.xyxy)
-                            cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 0), 5)
-                            if selected.matched_torso:
+                        if selected and not selected.terminated:
+                            if selected.selected:
+                                x1, y1, x2, y2 = map(int, selected.selected.xyxy)
+                                cv2.rectangle(
+                                    display, (x1, y1), (x2, y2), (0, 255, 0), 5
+                                )
+                            if selected.matched_torso and service.phase in (
+                                Phase.AIM_WARNING,
+                                Phase.AIM_THREAT,
+                            ):
+                                # Overrides that one point to red while it is
+                                # actually being sent to the motor.
                                 center = tuple(map(int, selected.matched_torso.center))
                                 cv2.circle(display, center, 8, (0, 0, 255), -1)
                         cv2.drawMarker(
                             display, (size[0] // 2, size[1] // 2), (255, 255, 255)
+                        )
+                        tracking = service.phase not in (
+                            Phase.STOPPED,
+                            Phase.SEARCH,
+                            Phase.FAULT,
+                        )
+                        status_text, status_color = {
+                            Phase.STOPPED: ("정지 (W 로 재개)", (150, 150, 150)),
+                            Phase.FAULT: ("고장", (0, 0, 255)),
+                        }.get(
+                            service.phase,
+                            ("추적중" if tracking else "탐색중", (0, 255, 0) if tracking else (0, 255, 255)),
+                        )
+                        display = put_text_kr(
+                            display, status_text, (20, 10), 28, status_color
                         )
                         lines = [
                             f"{service.phase.value} | {event.reason}",

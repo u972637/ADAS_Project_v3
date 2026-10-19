@@ -8,6 +8,10 @@ CAMERA_INDEX = 4
 ENABLE_MOTOR = True  # Production main.py runs detection, control and audio together.
 START_PAUSED = False  # main.py --start-paused enables W/resume gating when needed.
 DRY_RUN = False
+# False: Tracker's 500 Hz control thread shares this process (original).
+# True: the control loop runs in a separate OS process (motor/ipc_tracker.py),
+# immune to this process's own GIL load. Flip here to switch, no env var needed.
+MOTOR_PROCESS = True
 HEADLESS = False
 AUDIO_PLAYER_COMMAND = None
 
@@ -17,7 +21,6 @@ TORSO_CLASS_ID = 2
 TORSO_CLASS_NAME = "torso"
 MIN_SELECTION_CONFIDENCE = 0.5
 MIN_PLAYBACK_CONFIDENCE = 0.5
-CONSECUTIVE_FRAMES = 3
 TORSO_TRACK_CONFIDENCE = 0.2  # Raw detection threshold; torsos do NOT enter ByteTrack.
 TRACKER_CONFIG = "bytetrack.yaml"
 TRACK_LOST_SECONDS = 2.0

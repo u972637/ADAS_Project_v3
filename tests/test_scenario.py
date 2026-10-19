@@ -220,7 +220,9 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(s.player.state.state, "stopped")
         self.assertEqual(s.phase, Phase.SEARCH)
         feed(s, 2.6, detections(track_id=5))
-        self.assertEqual(s.phase, Phase.CONFIRM)
+        # One-frame confirm + the mock camera's instant convergence (converged=True
+        # by default) cascade straight through AIM_WARNING to BASELINE_WARNING.
+        self.assertEqual(s.phase, Phase.BASELINE_WARNING)
 
     def test_torso_missing_has_no_animal_center_fallback(self):
         s = make_service()
@@ -244,7 +246,9 @@ class ScenarioTests(unittest.TestCase):
         feed(s, 0.7, generation=old)
         self.assertIsNone(s.escape_tracker.target_id)
         feed(s, 0.8, generation=s.generation)
-        self.assertEqual(s.phase, Phase.CONFIRM)
+        # One-frame confirm + the mock camera's instant convergence cascade
+        # straight through AIM_WARNING to BASELINE_WARNING.
+        self.assertEqual(s.phase, Phase.BASELINE_WARNING)
 
     def test_no_camera_frame_watchdog_stops_audio_without_process_call(self):
         s = start_warning(make_service())

@@ -92,6 +92,10 @@ class EntrypointTests(unittest.TestCase):
             patch("animal.camera.open_camera", return_value=Mock()),
             patch("animal.camera.CameraCapture") as capture,
             patch("motor.dm4310_tracker.Tracker") as tracker,
+            # Independent of the repo's MOTOR_PROCESS default: this test mocks
+            # Tracker in-process and cannot pickle a Mock across RemoteTracker's
+            # child process boundary.
+            patch("animal.settings.MOTOR_PROCESS", False),
             patch("motor.config.GO_CENTER_DURATION", 0),
             patch("animal.runtime.RuntimeGuard") as guard,
             patch(
@@ -120,7 +124,6 @@ class EntrypointTests(unittest.TestCase):
         tracker.assert_called_once_with()
         tracker.return_value.go_default.assert_called_once()
         tracker.return_value.close.assert_called_once()
-        self.assertEqual(service._confirmation_count, 0)  # Cleared by final stop.
         self.assertIsInstance(service.player, WavPlayer)
         # A production frame was consumed before final cleanup.
         self.assertIsNotNone(service._last_result_at)

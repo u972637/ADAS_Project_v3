@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 class Phase(str, Enum):
     STOPPED = "stopped"
     SEARCH = "search"
-    CONFIRM = "confirm_species"
     AIM_WARNING = "aim_warning"
     BASELINE_WARNING = "frozen_warning_baseline"
     WAIT_WARNING_ASSET = "missing_warning_asset"
@@ -78,8 +77,6 @@ class WildlifeDeterrent:
         self.last_error = None
         self.last_event = Event(None, None, None, "search")
         self._lock = threading.RLock()
-        self._confirmation_key = None
-        self._confirmation_count = 0
         self._last_result_at = None
         self._observation_started = None
         self._frozen_ready_since = None
@@ -168,9 +165,7 @@ class WildlifeDeterrent:
         self.last_event = Event(target, label, file, reason)
         return self.last_event
 
-    def _clear_confirmation(self):
-        self._confirmation_key = None
-        self._confirmation_count = 0
+    def _clear_tracking_state(self):
         self._observation_started = None
         self.last_escape_step = None
         if self.camera:
@@ -203,7 +198,7 @@ class WildlifeDeterrent:
             self.phase = Phase.STOPPED
             self._generation += 1
             self.escape_tracker.reset()
-            self._clear_confirmation()
+            self._clear_tracking_state()
             try:
                 self._hold()
                 self.player.stop()
@@ -220,7 +215,7 @@ class WildlifeDeterrent:
             self.player.stop()
             self._hold()  # Cancel a still-running return ramp before accepting new targets.
             self.escape_tracker.reset()
-            self._clear_confirmation()
+            self._clear_tracking_state()
             self._generation += 1
             self.last_error = None
             self.phase = Phase.SEARCH
@@ -291,7 +286,7 @@ class WildlifeDeterrent:
                 self.player.stop()
                 self._hold()
                 self.escape_tracker.reset()
-                self._clear_confirmation()
+                self._clear_tracking_state()
                 self.phase = Phase.SEARCH
                 self._generation += 1
                 return self._event(
@@ -358,27 +353,22 @@ class WildlifeDeterrent:
         if step.terminated:
             self.player.stop()
             self._hold()
-            self._clear_confirmation()
+            self._clear_tracking_state()
             self.phase = Phase.SEARCH
             return self._event(step.termination_reason, step.selected)
         target = step.selected
-        if target is None:
+        if target is None and step.matched_torso is None:
             if self.camera:
                 self.camera.missing()
-            self._confirmation_count = 0
             return self._event(
                 "target_temporarily_missing"
                 if self.escape_tracker.target_id is not None
                 else "search"
             )
-        if self.phase in (Phase.SEARCH, Phase.CONFIRM):
-            self.phase = Phase.CONFIRM
-            key = (target.class_id, target.track_id)
-            if key != self._confirmation_key:
-                self._confirmation_key, self._confirmation_count = key, 0
-            self._confirmation_count += 1
-            if self._confirmation_count < settings.CONSECUTIVE_FRAMES:
-                return self._event("confirm_species", target)
+        if self.phase == Phase.SEARCH:
+            # EscapeTracker already picked this target the moment it became
+            # eligible (see its own one-frame selection); no extra multi-frame
+            # debounce here — W is the gate, this is the first usable frame.
             self.phase = Phase.AIM_WARNING
         if self.phase in (Phase.AIM_WARNING, Phase.AIM_THREAT):
             if self.camera is None:
@@ -397,7 +387,8 @@ class WildlifeDeterrent:
             return self._event(self.phase.value, target)
         if self.phase in (Phase.BASELINE_WARNING, Phase.BASELINE_THREAT):
             if (
-                self.escape_tracker.baseline_ready
+                target is not None
+                and self.escape_tracker.baseline_ready
                 and target.confidence >= settings.MIN_PLAYBACK_CONFIDENCE
             ):
                 return self._play(target, warning=self.phase == Phase.BASELINE_WARNING)

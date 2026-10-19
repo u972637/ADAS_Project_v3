@@ -21,8 +21,6 @@ if TEST_DIR not in sys.path:
     sys.path.insert(0, TEST_DIR)
 
 import cv2
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
 
 from motor.dm4310_tracker import Tracker, FRAME_W, FRAME_H
 # camera_test.py 는 같은 tools/ 폴더에 있는 가벼운 카메라 열기/프레임 변환
@@ -73,44 +71,7 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
-# cv2.putText()는 한글(등 비-라틴 문자)을 못 그려서 "???"로 깨진다 — 나눔고딕
-# 같은 한글 폰트로 PIL이 직접 그린 걸 다시 cv2 프레임에 합성한다.
-_KOREAN_FONT_CANDIDATES = (
-    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-)
-_korean_font_cache: dict[int, ImageFont.FreeTypeFont | None] = {}
-
-
-def _korean_font(size: int) -> ImageFont.FreeTypeFont | None:
-    if size not in _korean_font_cache:
-        font = None
-        for path in _KOREAN_FONT_CANDIDATES:
-            if os.path.isfile(path):
-                font = ImageFont.truetype(path, size)
-                break
-        if font is None:
-            print(f"[WARN] 한글 폰트를 못 찾음({_KOREAN_FONT_CANDIDATES}) "
-                  f"— 한글 오버레이가 깨질 수 있음")
-        _korean_font_cache[size] = font
-    return _korean_font_cache[size]
-
-
-def put_text_kr(frame_bgr, text: str, org: tuple[int, int],
-                 font_size: int = 20, color_bgr: tuple[int, int, int] = (255, 255, 255)):
-    """cv2 BGR 프레임 위에 한글이 섞인 텍스트를 PIL로 그려 합성한다.
-    폰트를 못 찾으면(이 머신에 나눔고딕이 없으면) cv2.putText로 폴백한다
-    (한글은 깨지지만 최소한 영문/숫자는 보이게)."""
-    font = _korean_font(font_size)
-    if font is None:
-        cv2.putText(frame_bgr, text, org, cv2.FONT_HERSHEY_SIMPLEX,
-                    font_size / 30.0, color_bgr, 2)
-        return frame_bgr
-    image = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
-    drawer = ImageDraw.Draw(image)
-    # PIL은 RGB, cv2는 BGR이라 순서를 뒤집어 넘긴다.
-    drawer.text(org, text, font=font, fill=(color_bgr[2], color_bgr[1], color_bgr[0]))
-    return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+from animal.overlay import put_text_kr as put_text_kr
 
 
 def _bow_tracker(tracker: Tracker, duration: float = BOW_DURATION):
@@ -336,8 +297,16 @@ def run_auto_track():
         return
 
     print("[..] Tracker 연결 중...")
-    tracker = Tracker()
-    print("[OK] 연결 완료 — 창이 뜨면 손을 들어보세요.")
+    from animal import settings as _settings
+
+    if _settings.MOTOR_PROCESS:
+        from motor.ipc_tracker import RemoteTracker
+
+        tracker = RemoteTracker()
+        print("[OK] 연결 완료(GIL 분리 프로세스) — 창이 뜨면 손을 들어보세요.")
+    else:
+        tracker = Tracker()
+        print("[OK] 연결 완료 — 창이 뜨면 손을 들어보세요.")
 
     disp_w, disp_h = int(FRAME_W * DISPLAY_SCALE), int(FRAME_H * DISPLAY_SCALE)
     win_name = "YOLO Nose Tracking (arm-up gated, q/ESC: back)"
