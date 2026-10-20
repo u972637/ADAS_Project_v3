@@ -28,6 +28,7 @@ from motor.config import FRAME_W, FRAME_H
 # 유틸리티 — people/main_facetrack.py 를 그대로 import하면 ultralytics/torch 까지
 # 끌려와 무거워지므로, 카메라 관련 부분만 재사용한다.
 from camera_test import DEFAULT_CAMERA_IDX, open_camera as cam_open_camera, read_frame as cam_read_frame
+from animal.camera import camera_hint
 from detection.yolo_pose import YoloPoseDetector
 
 from animal.mp3_player import MP3LoopPlayer
@@ -300,8 +301,8 @@ def run_auto_track():
     해제하고(재추적) 다시 손들기 대기 상태로 돌아간다. q/ESC 로 정상
     종료하면 _bow_tracker() 로 숙인위치에 복귀한다.
 
-    카메라는 people/main_facetrack.py 와 같은 설정(DEFAULT_CAMERA_IDX=4, 실측
-    확인됨)으로 camera_test.py 의 open_camera()/read_frame() 을 재사용한다.
+    카메라는 animal/settings.py 의 CAMERA_INDEX(/dev/videoN, 또는 설정 시 CAMERA_DEVICE)로
+    camera_test.py 의 open_camera()/read_frame() 을 재사용한다.
 
     4번(수동 조그)과 포트를 동시에 쓸 수 없으므로(같은 시리얼 장치), 이
     함수 안에서 자체적으로 Tracker 를 새로 열고 끝나면 닫는다 — 호출하는
@@ -315,10 +316,11 @@ def run_auto_track():
     detector = YoloPoseDetector(MODEL_PATH)
     print(f"[OK] 모델 로드 완료 (device={detector.device})")
 
-    print(f"[..] 카메라 index={DEFAULT_CAMERA_IDX} 여는 중...")
+    print(f"[..] 카메라 {DEFAULT_CAMERA_IDX} 여는 중...")
     cap = cam_open_camera(DEFAULT_CAMERA_IDX)
     if cap is None:
-        print(f"[ERROR] 카메라(index={DEFAULT_CAMERA_IDX})를 열 수 없습니다 — 메뉴로 복귀합니다.")
+        print(f"[ERROR] 카메라 {DEFAULT_CAMERA_IDX} 를 열 수 없습니다 — 메뉴로 복귀합니다.")
+        print(f"        {camera_hint()}")
         return
 
     print("[..] Tracker 연결 중...")

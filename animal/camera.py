@@ -2,17 +2,43 @@
 
 from __future__ import annotations
 
+import glob
 import threading
 import time
 
 import cv2
 
+from animal import settings
+
 FRAME_W, FRAME_H = 2592, 1944
 CAMERA_FOURCC = "YUY2"
+_BY_ID_PATTERN = "/dev/v4l/by-id/*-video-index0"
 
 
-def open_camera(camera_index: int):
-    cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
+def configured_camera() -> int | str:
+    """The camera to open: the pinned /dev/v4l/by-id path when configured,
+    otherwise the plain numeric index."""
+    if settings.CAMERA_DEVICE:
+        return settings.CAMERA_DEVICE
+    return settings.CAMERA_INDEX
+
+
+def camera_hint() -> str:
+    """Why-it-might-have-failed text for an unopenable camera: lists the
+    capture nodes that ARE connected so the right one can be pasted into
+    animal/settings.py (CAMERA_DEVICE)."""
+    found = sorted(glob.glob(_BY_ID_PATTERN))
+    if not found:
+        return "연결된 카메라(/dev/v4l/by-id/*-video-index0)가 없습니다."
+    return (
+        "현재 연결된 카메라: "
+        + ", ".join(found)
+        + " — animal/settings.py 의 CAMERA_DEVICE 를 이 중 하나로 맞추세요."
+    )
+
+
+def open_camera(camera: int | str):
+    cap = cv2.VideoCapture(camera, cv2.CAP_V4L2)
     if not cap.isOpened():
         cap.release()
         return None
@@ -54,9 +80,11 @@ def read_camera_frame(cap):
 class CameraCapture:
     """Keep only the newest frame while YOLO runs on another thread."""
 
-    def __init__(self, cap, camera_index: int):
+    def __init__(self, cap, camera: int | str):
         self._cap = cap
-        self._camera_index = camera_index
+        # Reconnects reopen this same source; a by-id path survives an
+        # unplug/replug even when the /dev/videoN number changes.
+        self._camera = camera
         self._frame = None
         self._sequence = 0
         self._captured_at = 0.0
@@ -89,7 +117,7 @@ class CameraCapture:
             while not self._stop.is_set():
                 if self._stop.wait(1.5):
                     break
-                cap = open_camera(self._camera_index)
+                cap = open_camera(self._camera)
                 if cap is not None:
                     self._cap = cap
                     for _ in range(10):

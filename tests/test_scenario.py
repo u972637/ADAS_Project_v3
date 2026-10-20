@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 
+from animal import settings
 from animal.audio import PlaybackStatus
 from animal.perception import Detection, EscapeTracker
 from animal.wildlife import WildlifeDeterrent, Phase
@@ -77,7 +78,7 @@ def make_service(alarm=True):
         edge_margin_px=2,
     )
     camera, player = Camera(), Player()
-    return WildlifeDeterrent(
+    service = WildlifeDeterrent(
         class_map={0: "boar", 1: "water_deer"},
         expected_names={0: "boar", 1: "deer"},
         catalogs={"boar": Catalog("alarm")} if alarm else {},
@@ -85,6 +86,11 @@ def make_service(alarm=True):
         escape_tracker=escape,
         camera=camera,
     )
+    # The synthetic animals below are 0.9-confidence; don't let the live
+    # MIN_SELECTION_CONFIDENCE tuning in animal/settings.py (e.g. 0.99) decide
+    # whether these scenarios can lock on at all.
+    service.min_selection_confidence = 0.5
+    return service
 
 
 def detections(shift=0, track_id=1, cls=0, torso=True, scale=1):
@@ -217,7 +223,11 @@ class ScenarioTests(unittest.TestCase):
 
     def test_no_camera_frame_watchdog_stops_audio_without_process_call(self):
         s = start_tracking(make_service())
-        event = s.tick(4, latest_camera_at=0.4)
+        # Gap must exceed the live CAMERA_TIMEOUT_SECONDS (not a hardcoded
+        # number) so this doesn't silently flip to perception_timeout if
+        # that setting is retuned.
+        now = settings.CAMERA_TIMEOUT_SECONDS + 2
+        event = s.tick(now, latest_camera_at=now - settings.CAMERA_TIMEOUT_SECONDS - 1)
         self.assertEqual(event.reason, "camera_timeout")
         self.assertEqual(s.player.state.state, "stopped")
         self.assertIsNone(s.escape_tracker.target_id)

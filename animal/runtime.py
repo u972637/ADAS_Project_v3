@@ -18,7 +18,7 @@ import time
 from animal import settings
 from animal.wildlife import Phase, WildlifeDeterrent
 from animal.perception import validate_model_classes
-from animal.overlay import put_text_kr
+from animal.overlay import put_lines_kr
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class RuntimeGuard:
 
     def command(self, command):
         command = command.strip().lower()
-        if command in ("stop", "r", "e"):
+        if command in ("stop", "r"):
             self.service.stop()
         elif command in ("resume", "w"):
             self.service.resume()
@@ -115,7 +115,12 @@ def run_session(
     """Shared camera, motor, input and cleanup loop with caller-supplied perception."""
     import cv2
     from ultralytics import YOLO
-    from animal.camera import CameraCapture, open_camera
+    from animal.camera import (
+        CameraCapture,
+        camera_hint,
+        configured_camera,
+        open_camera,
+    )
     from animal.aiming import TrackerCameraController, SimulatedCameraController
     from motor.config import FRAME_W, FRAME_H
 
@@ -157,10 +162,16 @@ def run_session(
         stack.callback(service.player.stop)
         if start_paused:
             service.pause()
-        cap = open_camera(settings.CAMERA_INDEX)
+            if service.camera:
+                # Menu 1/2 (and `--start-paused`) land at the shared default
+                # pose right away instead of wherever the rig happened to be
+                # left -- pause() only holds the current position.
+                service.camera.home()
+        camera = configured_camera()
+        cap = open_camera(camera)
         if cap is None:
-            raise RuntimeError(f"Cannot open camera {settings.CAMERA_INDEX}")
-        capture = CameraCapture(cap, settings.CAMERA_INDEX)
+            raise RuntimeError(f"Cannot open camera {camera}. {camera_hint()}")
+        capture = CameraCapture(cap, camera)
         stack.callback(capture.release)
         if not headless:
             cv2.namedWindow("Wildlife Deterrent", cv2.WINDOW_NORMAL)
@@ -169,7 +180,7 @@ def run_session(
         guard = RuntimeGuard(service, capture)
         stack.callback(guard.close)
         print(
-            "Terminal: stop / resume / quit + Enter. Window: R/E/Space stop, W resume, Q exit."
+            "Terminal: stop / resume / quit + Enter. Window: R stop, W resume, Q exit."
         )
         print(
             f"dry_run={dry_run}, motor={tracker is not None}, start_paused={start_paused}, "
@@ -242,17 +253,29 @@ def run_session(
                             )
 
                         for detection in detections:
+                            is_torso = detection.class_id == service.torso_class_id
+                            # Animals under MIN_SELECTION_CONFIDENCE are
+                            # still detected and tracked (they get an ID) but
+                            # can never be locked onto -- draw them gray so
+                            # the threshold is visible instead of looking
+                            # ignored.
+                            eligible = (
+                                is_torso
+                                or detection.confidence >= service.min_selection_confidence
+                            )
                             color = (
                                 (0, 180, 255)
-                                if detection.class_id == service.torso_class_id
+                                if is_torso
                                 else (80, 200, 80)
+                                if eligible
+                                else (140, 140, 140)
                             )
                             x1, y1, x2, y2 = scaled_xyxy(detection.xyxy)
                             cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
                             if detection.track_id is not None:
                                 cv2.putText(
                                     display,
-                                    f"{service.class_map[detection.class_id]} ID={detection.track_id}",
+                                    f"{service.class_map[detection.class_id]} ID={detection.track_id} {detection.confidence:.2f}",
                                     (x1, max(20, y1 - 8)),
                                     cv2.FONT_HERSHEY_SIMPLEX,
                                     0.7,
@@ -277,6 +300,22 @@ def run_session(
                                 # sound happens to be playing right now.
                                 center = scaled_point(selected.matched_torso.center)
                                 cv2.circle(display, center, 8, (0, 0, 255), -1)
+                            elif service.camera is not None and not any(
+                                d.class_id == service.torso_class_id
+                                for d in detections
+                            ):
+                                # Orange = NO torso in view at all this frame
+                                # (no yellow dot either), but the lock is
+                                # still alive (not yet released) and the
+                                # motor keeps resending its last aimed point
+                                # (animal/aiming.py missing()) -- a held
+                                # motor target with no torso. A visible
+                                # torso that simply isn't matched to the lock
+                                # shows as yellow only, never orange.
+                                held = service.camera.held_aim_point_px
+                                if held is not None:
+                                    center = scaled_point(held)
+                                    cv2.circle(display, center, 8, (0, 165, 255), -1)
                         cv2.drawMarker(
                             display,
                             (display_w // 2, display_h // 2),
@@ -294,17 +333,13 @@ def run_session(
                             service.phase,
                             ("추적중" if tracking else "탐색중", (0, 255, 0) if tracking else (0, 255, 255)),
                         )
-                        display = put_text_kr(
-                            display, status_text, (20, 10), 28, status_color
-                        )
                         lines = [
                             f"{service.phase.value} | {event.reason}",
                             # 추론(모델 판정)과 판정(추적/소리 결정)을 나눠서 표시 --
                             # 끊김의 원인이 모델 추론 쪽인지 판정 로직 쪽인지 바로 구분용.
                             f"추론 {(inferred_at - started) * 1000:.0f}ms | 판정 "
                             f"{(processed_at - inferred_at) * 1000:.0f}ms | "
-                            f"그리기 {(time.monotonic() - processed_at) * 1000:.0f}ms"
-                            " | W resume  R/E/Space stop  Q exit",
+                            f"그리기 {(time.monotonic() - processed_at) * 1000:.0f}ms",
                         ]
                         if tracker:
                             health = tracker.health()
@@ -313,16 +348,18 @@ def run_session(
                             )
                         if service.last_error:
                             lines.append(service.last_error)
-                        for i, line in enumerate(lines):
-                            cv2.putText(
-                                display,
-                                line,
-                                (20, 45 + 35 * i),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.8,
-                                (0, 220, 255),
-                                2,
-                            )
+                        # 키 안내: 한글이 섞인 줄이라 cv2.putText로 그리면
+                        # 깨지므로(???로 표시) put_lines_kr 쪽으로 모은다.
+                        lines.append(
+                            "R=정지  W=재개  Q=종료  "
+                            "U=추적 중인 torso 크기 기록"
+                        )
+                        overlay_lines = [(status_text, (20, 10), 28, status_color)]
+                        overlay_lines += [
+                            (line, (20, 45 + 35 * i), 22, (0, 220, 255))
+                            for i, line in enumerate(lines)
+                        ]
+                        display = put_lines_kr(display, overlay_lines)
                         cv2.imshow("Wildlife Deterrent", display)
                 else:
                     time.sleep(0.01)
@@ -339,7 +376,7 @@ def run_session(
                     key = cv2.waitKey(1) & 0xFF
                     if key in (ord("q"), 27):
                         guard.command("quit")
-                    elif key in (ord("r"), ord("e"), 32):
+                    elif key == ord("r"):
                         guard.command("stop")
                     elif key == ord("w"):
                         guard.command("resume")

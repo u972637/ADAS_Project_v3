@@ -4,6 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 
+from animal import settings
 from animal.perception import Detection, read_detections
 
 
@@ -48,7 +49,13 @@ class AnimalIdentityTracker:
 
 def infer_detections(model, service, frame, *, torso_reader=None):
     conf = min(service.min_selection_confidence, service.torso_confidence)
-    results = model.predict(frame, conf=conf, verbose=False)
+    # imgsz=None breaks ultralytics' predict() (it requires an int/list once
+    # passed at all) -- omit the kwarg entirely to keep the model's own
+    # training imgsz as the default, only override when settings asks to.
+    imgsz_kwargs = (
+        {} if settings.INFERENCE_IMGSZ is None else {"imgsz": settings.INFERENCE_IMGSZ}
+    )
+    results = model.predict(frame, conf=conf, verbose=False, **imgsz_kwargs)
     if len(results) != 1:
         raise ValueError("model must return one result per frame")
     result = results[0]

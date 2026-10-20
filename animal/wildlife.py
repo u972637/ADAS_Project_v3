@@ -124,6 +124,8 @@ class WildlifeDeterrent:
                 distance_metric=settings.DISTANCE_METRIC,
                 edge_margin_px=settings.EDGE_MARGIN_PX,
                 min_bbox_height_px=settings.MIN_BBOX_HEIGHT_PX,
+                torso_bridge_radius_multiplier=settings.TORSO_BRIDGE_RADIUS_MULTIPLIER,
+                bbox_retarget_grace_seconds=settings.BBOX_RETARGET_GRACE_SECONDS,
             ),
             torso_class_id=(
                 settings.TORSO_CLASS_ID if torso_class_id is None else torso_class_id

@@ -137,6 +137,16 @@ class RemoteTracker:
         self._update_count = 0
         self._update_actual_freq = 0.0
         self._update_window_t0 = time.monotonic()
+        # motion_complete() alone can't tell "ramp never started" from "ramp
+        # already finished" (StepTracker/trajectory Tracker both report
+        # _ramp is None in either case). In-process that's fine, since
+        # go_to() sets _ramp synchronously before any caller could check
+        # completion. Across the IPC boundary it isn't: go_to()/go_default()
+        # only enqueue a command, and the cached status this process reads
+        # can still be a pre-command snapshot for up to STATUS_INTERVAL. So
+        # wait_until_complete() also waits for a status snapshot stamped
+        # after the command was actually sent, not just "complete".
+        self._last_dispatch_at = 0.0
         self._process.start()
         child_conn.close()  # Only the child writes; drop the parent's write end.
 
@@ -222,14 +232,17 @@ class RemoteTracker:
                 else config.STEP_GO_CENTER_DURATION
             )
         self._cmd_queue.put(("go_to", yaw_rad, pitch_rad, duration))
+        self._last_dispatch_at = time.monotonic()
 
     def go_center(self):
         self.assert_healthy()
         self._cmd_queue.put(("go_center",))
+        self._last_dispatch_at = time.monotonic()
 
     def go_default(self, duration=None, yaw_deg=None, pitch_deg=None):
         self.assert_healthy()
         self._cmd_queue.put(("go_default", duration, yaw_deg, pitch_deg))
+        self._last_dispatch_at = time.monotonic()
 
     def get_state(self, axis):
         return self._latest()["current"][axis]
@@ -262,10 +275,17 @@ class RemoteTracker:
         return self._latest()["motion_complete"]
 
     def wait_until_complete(self, timeout=5.0):
+        dispatched_at = self._last_dispatch_at
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            self.assert_healthy()
-            if self.motion_complete():
+            status = self._latest()
+            if not status["health"]["ok"]:
+                raise MotorFault(status["health"]["fault"])
+            # A snapshot taken before the go_to()/go_default() we're
+            # actually waiting on was dispatched would read motion_complete
+            # as True from the PREVIOUS motion (or no motion at all) --
+            # see the note on _last_dispatch_at in __init__.
+            if status["sent_at"] >= dispatched_at and status["motion_complete"]:
                 return True
             time.sleep(0.01)
         return False

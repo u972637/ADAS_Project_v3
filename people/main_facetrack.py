@@ -67,13 +67,14 @@ if PROJECT_ROOT not in sys.path:
 
 import cv2
 import numpy as np
+from animal.camera import configured_camera
 from animal.mp3_player import MP3LoopPlayer
 from detection.yolo_pose import YoloPoseDetector
 
 # ──────────────────────────────────────────────
 # 설정
 # ──────────────────────────────────────────────
-CAMERA_IDX   = 4                     # Arducam B0538C 카메라 인덱스 — 실측 확인됨 (/dev/video4)
+CAMERA_IDX   = configured_camera()   # Arducam B0538C — animal/settings.py 의 CAMERA_INDEX(/dev/videoN) 또는 CAMERA_DEVICE
 MODEL_PATH   = os.path.join(PROJECT_ROOT, "assets", "models", "yolov8n-pose.pt")  # YOLO pose 모델
 CAMERA_FOURCC = "YUY2"               # B0538C(OG05B1B) 네이티브 출력 포맷 (UVC 표준, Bayer 아님)
 FRAME_W, FRAME_H = 2592, 1944        # B0538C 최대 해상도 @ 25fps (USB 3.0 기준)

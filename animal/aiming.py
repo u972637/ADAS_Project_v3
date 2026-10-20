@@ -15,14 +15,54 @@ class TrackerCameraController:
         self.tracker_size = tracker_size
         self._samples = deque(maxlen=settings.AIM_AVERAGE_FRAMES)
         self._outlier = None
+        self._last_point: tuple[float, float] | None = None
 
     def reset(self):
         self._samples.clear()
         self._outlier = None
+        self._last_point = None
+
+    def _held_point(self) -> tuple[float, float] | None:
+        """Last smoothed point, clamped per axis to within
+        HELD_AIM_MAX_OFFSET_FRACTION of screen center. The motor has been
+        steering that point toward center ever since it was sent, and
+        update() is relative to the motor's CURRENT position, so resending
+        the stale off-center offset as-is would keep pushing the motor
+        further every tick instead of holding it."""
+        if self._last_point is None:
+            return None
+        limit = settings.HELD_AIM_MAX_OFFSET_FRACTION
+        sx, sy = self._last_point
+        return (
+            min(max(sx, 0.5 - limit), 0.5 + limit),
+            min(max(sy, 0.5 - limit), 0.5 + limit),
+        )
+
+    @property
+    def held_aim_point_px(self) -> tuple[float, float] | None:
+        """The point `missing()` keeps resending when no torso matches this
+        frame (center-clamped, see _held_point), in frame pixel coordinates.
+        None if nothing has ever been aimed at. Display-only accessor (e.g.
+        drawing a dot for "motor target, no torso this frame" distinct from
+        a live match)."""
+        held = self._held_point()
+        if held is None:
+            return None
+        return held[0] * self.tracker_size[0], held[1] * self.tracker_size[1]
 
     def missing(self):
-        # Hold last motor goal across short detector gaps, but require fresh averaging.
-        self.reset()
+        """No torso matched this frame (short detector/fallback gap, same
+        locked target). Keep resending a held point near screen center
+        instead of going quiet -- the motor keeps an active, fresh command
+        through the gap, and the averaging window doesn't need to refill
+        from scratch once a real detection resumes. If there's no prior
+        point (nothing was ever aimed at, e.g. plain search), there's
+        nothing to hold."""
+        held = self.held_aim_point_px
+        if held is not None:
+            self.tracker.update(*held)
+        else:
+            self.reset()
 
     def aim(self, target, frame_size, timestamp):
         """Send the smoothed target to the motor every call (motor keeps
@@ -58,6 +98,7 @@ class TrackerCameraController:
         if abs(point[1] - 0.5) <= settings.AIM_DEADBAND_FRACTION:
             sy = 0.5
         self.tracker.update(sx * self.tracker_size[0], sy * self.tracker_size[1])
+        self._last_point = (sx, sy)
         if len(self._samples) < settings.AIM_AVERAGE_FRAMES:
             return None
         return max(abs(sx - 0.5), abs(sy - 0.5))

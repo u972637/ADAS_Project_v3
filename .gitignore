@@ -5,3 +5,5 @@ __pycache__/
 wildlife.pt
 .DS_Store
 .~lock.*#
+# 실행 로그(tools/menu1_logged.sh) — 측정 CSV(log/*.csv)는 그대로 추적
+log/*.log

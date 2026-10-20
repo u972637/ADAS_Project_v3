@@ -58,11 +58,48 @@ class AimingTests(unittest.TestCase):
         offset = self.camera.aim(torso(600), (1000, 1000), 0.3)
         self.assertGreater(offset, 0.0)
 
-    def test_missing_frame_keeps_goal_and_resets_averaging(self):
+    def test_missing_frame_resends_last_point_and_keeps_averaging(self):
         for t in (0, 0.1, 0.2):
             self.camera.aim(torso(500), (1000, 1000), t)
         before = list(self.motor.commands)
         self.camera.missing()
-        self.assertEqual(self.motor.commands, before)
-        # Averaging window was cleared: back to None until refilled.
-        self.assertIsNone(self.camera.aim(torso(500), (1000, 1000), 2))
+        # A held gap actively resends the last smoothed point -- the motor
+        # keeps a fresh command instead of going quiet.
+        self.assertEqual(len(self.motor.commands), len(before) + 1)
+        self.assertEqual(self.motor.commands[-1], before[-1])
+        # Averaging window was NOT cleared: a real detection resuming right
+        # where it left off doesn't need to refill from scratch.
+        self.assertAlmostEqual(self.camera.aim(torso(500), (1000, 1000), 2), 0.0)
+
+    def test_missing_frame_with_nothing_ever_aimed_is_a_plain_reset(self):
+        self.camera.missing()
+        self.assertEqual(self.motor.commands, [])
+        self.assertIsNone(self.camera.aim(torso(500), (1000, 1000), 0))
+
+    def test_held_point_is_clamped_near_screen_center(self):
+        from animal import settings
+
+        limit = settings.HELD_AIM_MAX_OFFSET_FRACTION
+        for t in (0, 0.1, 0.2):
+            self.camera.aim(torso(900, y=100), (1000, 1000), t)
+        # The live aim itself was far off-center and sent unclamped.
+        self.assertAlmostEqual(self.motor.commands[-1][0], 900)
+        before = len(self.motor.commands)
+        self.camera.missing()
+        # ...but the resent hold is pulled to within `limit` of center per
+        # axis, and the orange-dot accessor reports exactly what was sent.
+        sent = self.motor.commands[-1]
+        self.assertEqual(len(self.motor.commands), before + 1)
+        self.assertAlmostEqual(sent[0], 1000 * (0.5 + limit))
+        self.assertAlmostEqual(sent[1], 1000 * (0.5 - limit))
+        self.assertEqual(self.camera.held_aim_point_px, sent)
+
+    def test_held_aim_point_px_tracks_last_sent_point(self):
+        self.assertIsNone(self.camera.held_aim_point_px)
+        for t in (0, 0.1, 0.2):
+            self.camera.aim(torso(500), (1000, 1000), t)
+        self.assertEqual(self.camera.held_aim_point_px, (500, 500))
+        self.camera.missing()  # Held point survives a missing frame.
+        self.assertEqual(self.camera.held_aim_point_px, (500, 500))
+        self.camera.reset()
+        self.assertIsNone(self.camera.held_aim_point_px)
