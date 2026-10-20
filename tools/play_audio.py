@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audition a warning/threat clip directly, without camera or motor decisions."""
+"""Audition a warning clip directly, without camera or motor decisions."""
 
 import argparse
 import platform
@@ -17,21 +17,16 @@ def main():
     parser.add_argument(
         "--label", choices=sorted(set(settings.CLASS_TO_AUDIO.values())), default="boar"
     )
-    parser.add_argument("--stage", choices=("warning", "threat"), default="threat")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    warning = args.stage == "warning"
-    root = settings.WARNING_AUDIO_DIR if warning else settings.AUDIO_DIR
-    catalog = AudioCatalog.from_directory(
-        root, {args.label}, 1 if warning else settings.MIN_AUDIO_FILES_PER_CLASS
-    )
+    catalog = AudioCatalog.from_directory(settings.WARNING_AUDIO_DIR, {args.label}, 1)
     command = settings.AUDIO_PLAYER_COMMAND or (
         "afplay" if platform.system() == "Darwin" else "aplay"
     )
     player = DryRunPlayer() if args.dry_run or settings.DRY_RUN else WavPlayer(command)
     file = catalog.next(args.label)
     try:
-        print(f"{args.stage}: {file}")
+        print(f"{args.label}: {file}")
         player.play(file)
         while player.is_playing():
             time.sleep(0.05)

@@ -59,11 +59,14 @@ class AudioTests(unittest.TestCase):
             clock[0] = 12
             self.assertEqual(player.status().state, "completed")
 
-    def test_existing_threat_catalog_has_ten_per_species(self):
-        root = Path(__file__).resolve().parents[1] / "assets/audio"
-        catalog = AudioCatalog.from_directory(root, {"boar", "water_deer"}, 10)
-        for label in ("boar", "water_deer"):
-            self.assertEqual(len({catalog.next(label) for _ in range(10)}), 10)
+    def test_existing_warning_catalog_has_no_repeats_within_one_pass(self):
+        # assets/audio* (old single-stage "threat" clips) were removed along
+        # with the other warning variants once nothing referenced them;
+        # assets/warnings_pitch_eq is the only audio source left on disk.
+        root = Path(__file__).resolve().parents[1] / "assets/warnings_pitch_eq"
+        catalog = AudioCatalog.from_directory(root, {"boar", "water_deer"}, 1)
+        for label, count in (("boar", 13), ("water_deer", 24)):
+            self.assertEqual(len({catalog.next(label) for _ in range(count)}), count)
 
 
 class Capture:

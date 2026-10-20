@@ -6,6 +6,7 @@ import random
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 import wave
@@ -121,16 +122,29 @@ class WavPlayer:
         return self.status().state == "playing"
 
     def stop(self) -> None:
+        # terminate() only sends the signal; the process may take a moment
+        # to actually exit (SIGTERM is not instant), and waiting for that
+        # here used to block the caller -- which is the main detection/aim
+        # loop -- for up to its 0.3s timeout on every stop. Hand the
+        # wait/cleanup off to a background thread so stop() itself returns
+        # immediately; state is updated to "stopped" right away since the
+        # signal has already been sent.
         if self.is_playing():
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=0.3)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait(timeout=0.3)
-            self._stderr.close()
+            process, stderr = self._process, self._stderr
+            process.terminate()
             self._stderr = self._process = None
             self._status = PlaybackStatus("stopped", self._status.file)
+
+            def _wait_and_close():
+                try:
+                    process.wait(timeout=0.3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=0.3)
+                finally:
+                    stderr.close()
+
+            threading.Thread(target=_wait_and_close, daemon=True).start()
 
 
 class DryRunPlayer:

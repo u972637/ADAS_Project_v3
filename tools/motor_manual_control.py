@@ -7,6 +7,7 @@
 
 import math
 import os
+import platform
 import select
 import sys
 import termios
@@ -30,13 +31,13 @@ from camera_test import DEFAULT_CAMERA_IDX, open_camera as cam_open_camera, read
 from detection.yolo_pose import YoloPoseDetector
 
 from animal.mp3_player import MP3LoopPlayer
+from animal.audio import AudioCatalog, WavPlayer
 
 AXES = ("yaw", "pitch")
 # 방향키 한 번(자동반복 포함) 입력당 움직일 각도(도). 보수적으로 작게 잡음.
 STEP_DEG = 1.0
 
-from motor.config import (DEFAULT_YAW_DEG, DEFAULT_PITCH_DEG, CONTROL_FREQ,
-                          YAW_RANGE_RAD, PITCH_RANGE_RAD)
+from motor.config import CONTROL_FREQ, YAW_RANGE_RAD, PITCH_RANGE_RAD
 YAW_MIN_DEG, YAW_MAX_DEG = -math.degrees(YAW_RANGE_RAD), math.degrees(YAW_RANGE_RAD)
 PITCH_MIN_DEG, PITCH_MAX_DEG = -math.degrees(PITCH_RANGE_RAD), math.degrees(PITCH_RANGE_RAD)
 _RANGE_DEG = {'yaw': (YAW_MIN_DEG, YAW_MAX_DEG), 'pitch': (PITCH_MIN_DEG, PITCH_MAX_DEG)}
@@ -46,7 +47,7 @@ DT = 1.0 / CONTROL_FREQ
 # 공통: q 로 정상 종료할 때 돌아갈 "숙인위치"
 # ──────────────────────────────────────────────
 BOW_YAW_DEG   = 0.0
-BOW_PITCH_DEG = 5.0
+BOW_PITCH_DEG = -4.0
 BOW_DURATION  = 1.0   # 초
 
 # ──────────────────────────────────────────────
@@ -61,6 +62,21 @@ ARM_DOWN_GRACE = 10       # 프레임 — 이만큼 넘게 손을 내리면 추�
 
 # 3번("인식모드") 진입 시 1회 재생할 안내음
 TRACK_START2_PATH = os.path.join(PROJECT_ROOT, "assets", "voice", "track_start2.mp3")
+
+# 3번은 1/2(assets/warnings*, 중앙 근접도 기반)와 트리거 방식은 다르지만
+# 같은 음원 폴더(settings.WARNING_AUDIO_DIR, 현재 warnings_pitch_eq)를 쓴다.
+# A=멧돼지(boar), S=고라니(water_deer) 재생, D=중지(재생 중이든 아니든).
+MENU3_ALARM_LABELS = ("boar", "water_deer")
+
+# 3번에서 "추적 확정 아님" → 기본자세 복귀는 CONTROL_MODE별 기본 길이(현재
+# step모드 3초)와 무관하게 1초 고정 — 1/2번의 종료조건 복귀(8초, settings.
+# TERMINATION_RETURN_SECONDS)보다 훨씬 빠르게, 시작하자마자도 바로 반응하도록.
+MENU3_DEFAULT_RETURN_SECONDS = 1.0
+
+# 3번만 쓰는 기본자세 — 1/2번 공유 기본자세(motor/config.py의
+# DEFAULT_YAW_DEG/DEFAULT_PITCH_DEG, 현재 0°/15°)와 분리.
+MENU3_DEFAULT_YAW_DEG = 0.0
+MENU3_DEFAULT_PITCH_DEG = 30.0
 
 # 2592x1944 그대로 창을 띄우면 화면보다 커서 축소 표시만 한다
 # (Tracker.update() 에는 항상 원본 해상도 좌표를 그대로 넘김).
@@ -272,7 +288,7 @@ def run_auto_track():
 
     "타겟 모드"(= confirmed, 손들기로 추적이 확정된 상태)가 아니면 — 코가
     보이든 안 보이든, 손을 드는 중(ARM_UP_THRESHOLD 못 채움)이든 — 그 즉시
-    기본 자세(DEFAULT_YAW_DEG, DEFAULT_PITCH_DEG = 0°, 30°)로 Tracker.go_to()
+    기본 자세(MENU3_DEFAULT_YAW_DEG, MENU3_DEFAULT_PITCH_DEG = 0°, 30° — 1/2번과 분리)로 Tracker.go_to()
     를 1회 호출해 복귀시킨다 — 매 프레임 다시 호출하지 않도록(램프 시작점이
     계속 "지금 위치"로 리셋돼 버려 실제로는 못 움직이게 되므로) 상태가
     "타겟 모드 → 아님"으로 바뀌는 순간에만 트리거한다.
@@ -323,6 +339,39 @@ def run_auto_track():
     win_name = "YOLO Nose Tracking (arm-up gated, q/ESC: back)"
     cv2.namedWindow(win_name)
 
+    alarm_catalogs = {}
+    alarm_player = None
+    try:
+        command = _settings.AUDIO_PLAYER_COMMAND or (
+            "afplay" if platform.system() == "Darwin" else "aplay"
+        )
+        for label in MENU3_ALARM_LABELS:
+            folder = _settings.WARNING_AUDIO_DIR / label
+            if list(folder.glob("*.wav")):
+                alarm_catalogs[label] = AudioCatalog.from_directory(
+                    _settings.WARNING_AUDIO_DIR, {label}, 1
+                )
+            else:
+                print(f"[WARN] 경계음 없음: {folder}/*.wav — 해당 키 비활성")
+        if alarm_catalogs:
+            alarm_player = WavPlayer(command)
+    except Exception as error:
+        print(f"[WARN] 경계음 재생기 초기화 실패: {error} — A/S 키 비활성")
+        alarm_catalogs = {}
+
+    def play_alarm(label):
+        if alarm_player is None or label not in alarm_catalogs:
+            print(f"\n[WARN] {label} 경계음 파일이 없어 재생할 수 없습니다.")
+            return
+        try:
+            alarm_player.play(alarm_catalogs[label].next(label))
+        except Exception as error:
+            print(f"\n[WARN] 경계음 재생 실패: {error}")
+
+    def stop_alarm():
+        if alarm_player is not None:
+            alarm_player.stop()
+
     arm_up_start = None    # 현재 대상이 손을 들기 시작한 시각 (None=안 듦)
     confirmed = False      # ARM_UP_THRESHOLD 넘겨서 "추적 확정" 상태인지
     arm_down_count = 0
@@ -364,6 +413,7 @@ def run_auto_track():
                 arm_down_count += 1
                 if confirmed and arm_down_count > ARM_DOWN_GRACE:
                     confirmed = False
+                    stop_alarm()  # 추적 종료 — 재생 중이든 아니든 소리 끔
                 if arm_up_start is not None and not confirmed:
                     arm_up_start = None
 
@@ -375,8 +425,9 @@ def run_auto_track():
             elif not went_default:
                 # confirmed(추적 확정) 가 아니면 — 코가 보이든 안 보이든 —
                 # 기본 자세로 1회 복귀. 다시 추적이 확정되면 재무장된다.
-                tracker.go_to(yaw_rad=math.radians(DEFAULT_YAW_DEG),
-                              pitch_rad=math.radians(DEFAULT_PITCH_DEG))
+                tracker.go_to(yaw_rad=math.radians(MENU3_DEFAULT_YAW_DEG),
+                              pitch_rad=math.radians(MENU3_DEFAULT_PITCH_DEG),
+                              duration=MENU3_DEFAULT_RETURN_SECONDS)
                 went_default = True
 
             disp = cv2.resize(frame, (disp_w, disp_h))
@@ -401,11 +452,11 @@ def run_auto_track():
                 status = f"ARM UP {elapsed:.1f}/{ARM_UP_THRESHOLD:.0f}s"
                 color = (0, 255, 255)
             else:
-                status = f"NOT TRACKING -> default pose ({DEFAULT_YAW_DEG:.0f}, {DEFAULT_PITCH_DEG:.0f})"
+                status = f"NOT TRACKING -> default pose ({MENU3_DEFAULT_YAW_DEG:.0f}, {MENU3_DEFAULT_PITCH_DEG:.0f})"
                 color = (255, 150, 0)
             cv2.putText(disp, status, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-            cv2.putText(disp, "[R]Reset [Q]Quit", (10, disp_h - 35),
+            cv2.putText(disp, "[A]Boar [S]Deer [D]Stop [R]Reset [Q]Quit", (10, disp_h - 35),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
             hz_text = (f"cam->target {tracker.get_update_freq():.1f}Hz | "
@@ -438,11 +489,19 @@ def run_auto_track():
                 confirmed = False
                 arm_down_count = 0
                 went_default = False
+                stop_alarm()
                 print("\n[재추적] r 입력 — 추적 확정 해제, 기본 자세로 복귀합니다.")
+            elif key == ord('a'):
+                play_alarm("boar")
+            elif key == ord('s'):
+                play_alarm("water_deer")
+            elif key == ord('d'):
+                stop_alarm()
         # while 을 'q'/ESC(정상 종료)로 빠져나온 경우에만 실행된다 — 루프 중
         # 예외(Ctrl+C 등)가 나면 아래로 내려오지 않고 바로 finally 로 간다.
         _bow_tracker(tracker)
     finally:
+        stop_alarm()
         cv2.destroyWindow(win_name)
         cap.release()
         tracker.close()

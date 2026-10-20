@@ -36,16 +36,19 @@ class Catalog:
 
 
 class Camera:
+    """Stands in for the whole TrackerCameraController: aim() reports a
+    settable offset directly (0.0 = dead center), bypassing the real
+    averaging/outlier logic — tests control it explicitly via self.offset."""
+
     def __init__(self):
         self.aims = []
         self.holds = self.homes = 0
-        self.converged = True
+        self.offset = 0.0
         self.ok = True
-        self.braking_done = True
 
     def aim(self, target, size, timestamp):
         self.aims.append((target, timestamp))
-        return self.converged
+        return self.offset
 
     def reset(self):
         pass
@@ -59,14 +62,11 @@ class Camera:
     def home(self, duration=None, yaw_deg=None, pitch_deg=None):
         self.homes += 1
 
-    def frozen_ready(self):
-        return self.braking_done
-
     def health(self):
         return {"ok": self.ok, "fault": None if self.ok else "test fault"}
 
 
-def make_service(warnings=True):
+def make_service(alarm=True):
     escape = EscapeTracker(
         track_lost_seconds=2,
         reselect_grace_seconds=1,
@@ -75,15 +75,12 @@ def make_service(warnings=True):
         area_hold_seconds=0.2,
         area_ratio_threshold=0.5,
         edge_margin_px=2,
-        torso_window_size=3,
-        torso_speed_threshold=0.15,
     )
     camera, player = Camera(), Player()
     return WildlifeDeterrent(
         class_map={0: "boar", 1: "water_deer"},
         expected_names={0: "boar", 1: "deer"},
-        catalog=Catalog("threat"),
-        warning_catalogs={"boar": Catalog("warning")} if warnings else {},
+        catalogs={"boar": Catalog("alarm")} if alarm else {},
         player=player,
         escape_tracker=escape,
         camera=camera,
@@ -109,98 +106,67 @@ def feed(s, t, ds=None, **kwargs):
     )
 
 
-def start_warning(s):
-    for t in (0, 0.1, 0.2, 0.3, 0.4):
-        feed(s, t)
+def start_tracking(s):
+    """One confident, centered frame is enough: selection is one-frame and
+    playback starts as soon as a confident target is picked (no center
+    requirement), so this starts it on the very first feed."""
+    feed(s, 0.0)
     return s
 
 
 class ScenarioTests(unittest.TestCase):
-    def test_frames_captured_before_braking_finished_cannot_seed_baseline(self):
-        service = make_service()
-        service.camera.braking_done = False
-        for t in (0, 0.1, 0.2):
-            feed(service, t)
-        service.camera.braking_done = True
-        # Inference completes at 1.0, but this image predates stationary feedback.
-        feed(service, 0.3, now=1.0)
-        feed(service, 0.5, now=1.1)
-        self.assertFalse(service.escape_tracker.baseline_ready)
-        self.assertEqual(service.player.requests, [])
-        for t in (1.2, 1.4):
-            feed(service, t, now=t + 0.05)
-        self.assertEqual(service.phase, Phase.PLAY_WARNING)
-
-    def test_braking_delays_escape_baseline_and_audio_until_stationary(self):
-        service = make_service()
-        service.camera.braking_done = False
-        for i in range(15):
-            feed(service, i / 10)
-        self.assertEqual(service.phase, Phase.BASELINE_WARNING)
-        self.assertFalse(service.escape_tracker.baseline_ready)
-        self.assertEqual(service.player.requests, [])
-        service.camera.braking_done = True
-        for i in range(15, 18):
-            feed(service, i / 10)
-        self.assertEqual(service.phase, Phase.PLAY_WARNING)
-
-    def test_warning_observe_five_seconds_then_reaim_before_threat(self):
-        s = start_warning(make_service())
-        self.assertEqual(s.phase, Phase.PLAY_WARNING)
-        self.assertEqual(s.player.requests, [Path("warning/boar.wav")])
-        aims = len(s.camera.aims)
-        feed(s, 0.5, detections(shift=10))
-        self.assertEqual(len(s.camera.aims), aims)
-        s.player.finish()
-        feed(s, 1)
-        self.assertEqual(s.phase, Phase.OBSERVE_WARNING)
-        feed(s, 5.99)
-        self.assertEqual(s.phase, Phase.OBSERVE_WARNING)
-        self.assertEqual(len(s.camera.aims), aims)
-        feed(s, 6)
-        self.assertEqual(s.phase, Phase.AIM_THREAT)
-        self.assertEqual(len(s.player.requests), 1)
-        feed(s, 6.1)
-        self.assertEqual(len(s.camera.aims), aims + 1)
-        for t in (6.2, 6.3):
-            feed(s, t)
-        self.assertEqual(s.phase, Phase.PLAY_THREAT)
-        self.assertEqual(s.player.requests[-1], Path("threat/boar.wav"))
-        s.player.finish()
-        feed(s, 7)
-        feed(s, 30)
-        self.assertEqual(s.phase, Phase.OBSERVE_THREAT)
-        self.assertEqual(len(s.player.requests), 2)
-        self.assertEqual(len(s.camera.aims), aims + 1)
-
-    def test_missing_warning_never_substitutes_threat(self):
-        s = start_warning(make_service(warnings=False))
-        self.assertEqual(s.phase, Phase.WAIT_WARNING_ASSET)
-        feed(s, 60)
-        self.assertEqual(s.player.requests, [])
-
-    def test_rapid_exit_stops_sound_and_never_aims_or_plays_on_exit_frame(self):
-        s = start_warning(make_service())
-        count = len(s.camera.aims)
-        event = feed(s, 0.5, detections(shift=200))
-        self.assertIn("rapid_movement_detected", event.reason)
-        self.assertEqual(s.phase, Phase.SEARCH)
-        self.assertEqual(s.player.state.state, "stopped")
-        self.assertEqual(len(s.camera.aims), count)
-        self.assertEqual(len(s.player.requests), 1)
-        feed(s, 0.6, detections(shift=200))
-        self.assertIsNone(s.escape_tracker.target_id)
-
-    def test_moving_camera_during_aim_does_not_trigger_escape(self):
+    def test_enters_tracking_and_starts_playback_once_centered(self):
         s = make_service()
-        s.camera.converged = False
-        for i, shift in enumerate((0, 100, 200, 300, 400, 300, 200)):
-            event = feed(s, i * 0.1, detections(shift=shift))
-        self.assertEqual(s.phase, Phase.AIM_WARNING)
-        self.assertNotIn("rapid", event.reason)
+        event = feed(s, 0.0)
+        self.assertEqual(s.phase, Phase.TRACKING)
+        self.assertTrue(s.playing)
+        self.assertEqual(s.player.requests, [Path("alarm/boar.wav")])
+        self.assertEqual(event.reason, "playing")
 
-    def test_area_reduction_in_frozen_stage_terminates(self):
-        s = start_warning(make_service())
+    def test_playback_needs_centered_aim_to_start_but_exit_band_to_stop(self):
+        s = make_service()
+        s.camera.offset = 0.40  # far from center -- must not start yet
+        feed(s, 0.0)
+        self.assertFalse(s.playing, "should NOT start outside the enter band")
+        s.camera.offset = 0.03  # inside PLAYBACK_ENTER_FRACTION (0.05)
+        feed(s, 0.1)
+        self.assertTrue(s.playing, "should START once centered within the enter band")
+        s.camera.offset = 0.10
+        feed(s, 0.2)
+        self.assertTrue(s.playing, "should KEEP playing inside the exit band")
+        s.camera.offset = 0.20
+        feed(s, 0.3)
+        self.assertFalse(s.playing, "should STOP only once past the exit band")
+        self.assertEqual(s.player.state.state, "stopped")
+
+    def test_motor_keeps_tracking_continuously_while_playing(self):
+        s = start_tracking(make_service())
+        aims = len(s.camera.aims)
+        feed(s, 0.1, detections(shift=5))
+        feed(s, 0.2, detections(shift=10))
+        self.assertGreater(len(s.camera.aims), aims, "aim() must keep being called")
+
+    def test_continuous_playback_advances_clips_after_a_gap(self):
+        s = start_tracking(make_service())
+        self.assertEqual(len(s.player.requests), 1)
+        s.player.finish()
+        feed(s, 0.1)  # clip completed this frame: gap timer starts, no new clip yet
+        self.assertEqual(len(s.player.requests), 1)
+        feed(s, 0.1 + 0.31)  # past PLAYBACK_GAP_SECONDS=0.3
+        self.assertEqual(len(s.player.requests), 2)
+        self.assertTrue(s.playing)
+
+    def test_missing_species_catalog_never_plays_but_keeps_tracking(self):
+        s = make_service(alarm=False)
+        event = feed(s, 0.0)
+        self.assertEqual(s.phase, Phase.TRACKING)
+        self.assertFalse(s.playing)
+        self.assertEqual(s.player.requests, [])
+        self.assertEqual(event.reason, "tracking")
+
+    def test_area_reduction_terminates_while_tracking(self):
+        s = start_tracking(make_service())
+        event = None
         for t in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0):
             event = feed(s, t, detections(scale=0.5))
             if "bbox_area_reduced" in event.reason:
@@ -209,7 +175,7 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(s.player.state.state, "stopped")
 
     def test_short_missing_holds_then_confirmed_loss_stops_audio(self):
-        s = start_warning(make_service())
+        s = start_tracking(make_service())
         aims = len(s.camera.aims)
         feed(s, 0.5, [])
         feed(s, 1.5, [])
@@ -220,12 +186,12 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(s.player.state.state, "stopped")
         self.assertEqual(s.phase, Phase.SEARCH)
         feed(s, 2.6, detections(track_id=5))
-        # One-frame confirm + the mock camera's instant convergence (converged=True
-        # by default) cascade straight through AIM_WARNING to BASELINE_WARNING.
-        self.assertEqual(s.phase, Phase.BASELINE_WARNING)
+        self.assertEqual(s.phase, Phase.TRACKING)
+        self.assertTrue(s.playing)
 
     def test_torso_missing_has_no_animal_center_fallback(self):
         s = make_service()
+        event = None
         for i in range(6):
             event = feed(s, i * 0.1, detections(torso=False))
         self.assertEqual(s.camera.aims, [])
@@ -233,7 +199,7 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(s.player.requests, [])
 
     def test_stop_latches_until_resume_and_rejects_inflight_results(self):
-        s = start_warning(make_service())
+        s = start_tracking(make_service())
         old = s.generation
         s.stop()
         aims = len(s.camera.aims)
@@ -246,19 +212,18 @@ class ScenarioTests(unittest.TestCase):
         feed(s, 0.7, generation=old)
         self.assertIsNone(s.escape_tracker.target_id)
         feed(s, 0.8, generation=s.generation)
-        # One-frame confirm + the mock camera's instant convergence cascade
-        # straight through AIM_WARNING to BASELINE_WARNING.
-        self.assertEqual(s.phase, Phase.BASELINE_WARNING)
+        self.assertEqual(s.phase, Phase.TRACKING)
+        self.assertTrue(s.playing)
 
     def test_no_camera_frame_watchdog_stops_audio_without_process_call(self):
-        s = start_warning(make_service())
+        s = start_tracking(make_service())
         event = s.tick(4, latest_camera_at=0.4)
         self.assertEqual(event.reason, "camera_timeout")
         self.assertEqual(s.player.state.state, "stopped")
         self.assertIsNone(s.escape_tracker.target_id)
 
     def test_blocked_inference_with_fresh_camera_is_distinguished(self):
-        s = start_warning(make_service())
+        s = start_tracking(make_service())
         self.assertEqual(s.tick(4, latest_camera_at=4).reason, "perception_timeout")
         self.assertEqual(s.player.state.state, "stopped")
 
@@ -269,9 +234,9 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(s.camera.aims, [])
 
     def test_audio_failure_does_not_escalate_and_allows_explicit_retry(self):
-        s = start_warning(make_service())
+        s = start_tracking(make_service())
         s.player.state = PlaybackStatus(
-            "failed", Path("warning/boar.wav"), 1, "device unavailable"
+            "failed", Path("alarm/boar.wav"), 1, "device unavailable"
         )
         s.tick(0.5)
         self.assertEqual(s.phase, Phase.FAULT)
@@ -282,10 +247,10 @@ class ScenarioTests(unittest.TestCase):
         for t in (31, 31.1, 31.2, 31.3, 31.4):
             feed(s, t)
         self.assertEqual(len(s.player.requests), 2)
-        self.assertEqual(s.player.requests[-1], Path("warning/boar.wav"))
+        self.assertEqual(s.player.requests[-1], Path("alarm/boar.wav"))
 
     def test_motor_fault_stops_audio_and_blocks_resume(self):
-        s = start_warning(make_service())
+        s = start_tracking(make_service())
         s.camera.ok = False
         s.tick(0.5)
         self.assertEqual(s.phase, Phase.FAULT)
@@ -294,7 +259,8 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(s.phase, Phase.FAULT)
 
     def test_species_change_cannot_inherit_locked_target(self):
-        s = start_warning(make_service())
+        s = start_tracking(make_service())
+        event = None
         for t in (0.5, 2.5):
             event = feed(s, t, detections(cls=1))
         self.assertEqual(event.reason, "tracking_lost")
@@ -302,6 +268,7 @@ class ScenarioTests(unittest.TestCase):
     def test_no_motor_does_not_claim_convergence_or_play(self):
         s = make_service()
         s.camera = None
+        event = None
         for t in (0, 0.1, 0.2, 1, 2):
             event = feed(s, t)
         self.assertEqual(event.reason, "motor_disabled")

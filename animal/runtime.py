@@ -160,15 +160,34 @@ def run_session(
         )
         last_sequence = 0
         last_report = None
+        last_loop_at = time.monotonic()
+        prev_ready = None
         try:
             while not guard.quit.is_set():
+                now_loop = time.monotonic()
+                gap = now_loop - last_loop_at
+                if gap > 0.2:
+                    # Pins down whether a freeze is an upstream stall (no new
+                    # frame reaching read_new -- camera/driver/USB side) or
+                    # something blocking this loop itself despite frames
+                    # arriving on time; the per-stage timing below only
+                    # covers frames that DID arrive, so a stall before that
+                    # point would otherwise go unlogged. prev_ready tells us
+                    # whether the PREVIOUS iteration (the one that took this
+                    # long) had a frame to process or was just idling.
+                    logger.warning(
+                        "loop gap %.0f ms (prev_ready=%s)", gap * 1000, prev_ready
+                    )
+                last_loop_at = now_loop
                 ready, frame, last_sequence, captured_at = capture.read_new(
                     last_sequence
                 )
+                prev_ready = ready
                 if ready:
                     generation = service.generation
                     started = time.monotonic()
                     size, detections = inference(model, service, frame)
+                    inferred_at = time.monotonic()
                     event = service.process_detections(
                         size,
                         detections,
@@ -176,16 +195,42 @@ def run_session(
                         now=time.monotonic(),
                         generation=generation,
                     )
+                    processed_at = time.monotonic()
                     if not headless:
-                        # Capture, inference and control share unmirrored coordinates.
-                        display = frame.copy()
+                        # Capture, inference and control run on the full-res
+                        # frame; the preview window only needs to be legible,
+                        # so draw on a downscaled copy (matches the window's
+                        # own size) instead of a 2592x1944 canvas -- drawing,
+                        # the Korean-text PIL round-trip and cv2.imshow's GUI
+                        # blit all scale with pixel count and were a real
+                        # source of display-side stutter at full resolution.
+                        display_w = 1100
+                        display_scale = display_w / size[0]
+                        display_h = round(size[1] * display_scale)
+                        display = cv2.resize(frame, (display_w, display_h))
+
+                        def scaled_xyxy(xyxy):
+                            x1, y1, x2, y2 = xyxy
+                            return (
+                                round(x1 * display_scale),
+                                round(y1 * display_scale),
+                                round(x2 * display_scale),
+                                round(y2 * display_scale),
+                            )
+
+                        def scaled_point(point):
+                            return (
+                                round(point[0] * display_scale),
+                                round(point[1] * display_scale),
+                            )
+
                         for detection in detections:
                             color = (
                                 (0, 180, 255)
                                 if detection.class_id == service.torso_class_id
                                 else (80, 200, 80)
                             )
-                            x1, y1, x2, y2 = map(int, detection.xyxy)
+                            x1, y1, x2, y2 = scaled_xyxy(detection.xyxy)
                             cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
                             if detection.track_id is not None:
                                 cv2.putText(
@@ -200,25 +245,25 @@ def run_session(
                             if detection.class_id == service.torso_class_id:
                                 # Every detected torso's target coordinate shows
                                 # in yellow, always -- not only the locked one.
-                                center = tuple(map(int, detection.center))
+                                center = scaled_point(detection.center)
                                 cv2.circle(display, center, 8, (0, 255, 255), -1)
                         selected = service.last_escape_step
                         if selected and not selected.terminated:
                             if selected.selected:
-                                x1, y1, x2, y2 = map(int, selected.selected.xyxy)
+                                x1, y1, x2, y2 = scaled_xyxy(selected.selected.xyxy)
                                 cv2.rectangle(
                                     display, (x1, y1), (x2, y2), (0, 255, 0), 5
                                 )
-                            if selected.matched_torso and service.phase in (
-                                Phase.AIM_WARNING,
-                                Phase.AIM_THREAT,
-                            ):
-                                # Overrides that one point to red while it is
-                                # actually being sent to the motor.
-                                center = tuple(map(int, selected.matched_torso.center))
+                            if selected.matched_torso:
+                                # Red = motor has an active aim signal on this
+                                # torso (tracking), independent of whether
+                                # sound happens to be playing right now.
+                                center = scaled_point(selected.matched_torso.center)
                                 cv2.circle(display, center, 8, (0, 0, 255), -1)
                         cv2.drawMarker(
-                            display, (size[0] // 2, size[1] // 2), (255, 255, 255)
+                            display,
+                            (display_w // 2, display_h // 2),
+                            (255, 255, 255),
                         )
                         tracking = service.phase not in (
                             Phase.STOPPED,
@@ -237,7 +282,12 @@ def run_session(
                         )
                         lines = [
                             f"{service.phase.value} | {event.reason}",
-                            f"Inference {(time.monotonic() - started) * 1000:.0f} ms | W resume  R/E/Space stop  Q exit",
+                            # 추론(모델 판정)과 판정(추적/소리 결정)을 나눠서 표시 --
+                            # 끊김의 원인이 모델 추론 쪽인지 판정 로직 쪽인지 바로 구분용.
+                            f"추론 {(inferred_at - started) * 1000:.0f}ms | 판정 "
+                            f"{(processed_at - inferred_at) * 1000:.0f}ms | "
+                            f"그리기 {(time.monotonic() - processed_at) * 1000:.0f}ms"
+                            " | W resume  R/E/Space stop  Q exit",
                         ]
                         if tracker:
                             health = tracker.health()

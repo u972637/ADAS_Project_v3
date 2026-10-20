@@ -1,4 +1,10 @@
-"""Single owner of target → aim → freeze → warning → observe → threat transitions."""
+"""Single owner of target -> aim -> continuous playback transitions.
+
+Sound starts once the aimed torso point (the red dot -- a pure motor-signal
+condition, independent of the animal bbox) is within PLAYBACK_ENTER_FRACTION
+of screen center, then keeps playing (motor keeps tracking the whole time)
+until the aim point drifts past PLAYBACK_EXIT_FRACTION.
+"""
 
 from __future__ import annotations
 
@@ -28,27 +34,8 @@ logger = logging.getLogger(__name__)
 class Phase(str, Enum):
     STOPPED = "stopped"
     SEARCH = "search"
-    AIM_WARNING = "aim_warning"
-    BASELINE_WARNING = "frozen_warning_baseline"
-    WAIT_WARNING_ASSET = "missing_warning_asset"
-    PLAY_WARNING = "playing_warning"
-    OBSERVE_WARNING = "observing_warning"
-    AIM_THREAT = "aim_threat"
-    BASELINE_THREAT = "frozen_threat_baseline"
-    PLAY_THREAT = "playing_threat"
-    OBSERVE_THREAT = "observing_threat"
+    TRACKING = "tracking"  # aiming continuously; audio on/off via hysteresis
     FAULT = "fault"
-
-
-FROZEN_PHASES = {
-    Phase.BASELINE_WARNING,
-    Phase.WAIT_WARNING_ASSET,
-    Phase.PLAY_WARNING,
-    Phase.OBSERVE_WARNING,
-    Phase.BASELINE_THREAT,
-    Phase.PLAY_THREAT,
-    Phase.OBSERVE_THREAT,
-}
 
 
 class WildlifeDeterrent:
@@ -57,8 +44,7 @@ class WildlifeDeterrent:
         *,
         class_map,
         expected_names,
-        catalog,
-        warning_catalogs,
+        catalogs,
         player,
         escape_tracker,
         camera=None,
@@ -66,7 +52,7 @@ class WildlifeDeterrent:
         torso_confidence=settings.TORSO_TRACK_CONFIDENCE,
     ):
         self.class_map, self.expected_names = dict(class_map), dict(expected_names)
-        self.catalog, self.warning_catalogs = catalog, warning_catalogs
+        self.catalogs = catalogs  # label -> AudioCatalog; missing label = no sound for it
         self.player, self.camera = player, camera
         self.escape_tracker = escape_tracker
         self.torso_class_id, self.torso_confidence = torso_class_id, torso_confidence
@@ -78,8 +64,9 @@ class WildlifeDeterrent:
         self.last_event = Event(None, None, None, "search")
         self._lock = threading.RLock()
         self._last_result_at = None
-        self._observation_started = None
-        self._frozen_ready_since = None
+        self._playing = False
+        self._playback_label = None
+        self._next_clip_at = None
         self._generation = 0
         self.identity_tracker = (
             None  # Lazy construction; no Ultralytics needed by state tests.
@@ -104,16 +91,16 @@ class WildlifeDeterrent:
             )
             dry_run = settings.DRY_RUN if dry_run is None else dry_run
             player = DryRunPlayer() if dry_run else WavPlayer(command)
-        warning_catalogs = {}
+        catalogs = {}
         for label in set(class_map.values()):
             folder = settings.WARNING_AUDIO_DIR / label
             if list(folder.glob("*.wav")):
-                warning_catalogs[label] = AudioCatalog.from_directory(
+                catalogs[label] = AudioCatalog.from_directory(
                     settings.WARNING_AUDIO_DIR, {label}, 1
                 )
             else:
                 logger.warning(
-                    "Warning asset missing: %s/*.wav; threat substitution is disabled",
+                    "Warning asset missing: %s/*.wav; playback disabled for this species",
                     folder,
                 )
         return cls(
@@ -123,12 +110,7 @@ class WildlifeDeterrent:
                 if expected_names is None
                 else expected_names
             ),
-            catalog=AudioCatalog.from_directory(
-                settings.AUDIO_DIR,
-                set(class_map.values()),
-                settings.MIN_AUDIO_FILES_PER_CLASS,
-            ),
-            warning_catalogs=warning_catalogs,
+            catalogs=catalogs,
             player=player,
             camera=camera,
             escape_tracker=EscapeTracker(
@@ -140,10 +122,7 @@ class WildlifeDeterrent:
                 area_ratio_threshold=settings.AREA_RATIO_THRESHOLD,
                 height_ratio_threshold=settings.HEIGHT_RATIO_THRESHOLD,
                 distance_metric=settings.DISTANCE_METRIC,
-                nominal_fps=settings.TORSO_NOMINAL_FPS,
                 edge_margin_px=settings.EDGE_MARGIN_PX,
-                torso_window_size=settings.TORSO_WINDOW_SIZE,
-                torso_speed_threshold=settings.TORSO_SPEED_THRESHOLD,
                 min_bbox_height_px=settings.MIN_BBOX_HEIGHT_PX,
             ),
             torso_class_id=(
@@ -161,27 +140,36 @@ class WildlifeDeterrent:
         with self._lock:
             return self._generation
 
+    @property
+    def playing(self):
+        with self._lock:
+            return self._playing
+
     def _event(self, reason, target=None, file=None):
         label = self.class_map.get(target.class_id) if target else None
         self.last_event = Event(target, label, file, reason)
         return self.last_event
 
     def _clear_tracking_state(self):
-        self._observation_started = None
         self.last_escape_step = None
         if self.camera:
             self.camera.reset()
 
     def _hold(self):
-        self._frozen_ready_since = None
         if self.camera:
             self.camera.hold()
+
+    def _stop_playback(self):
+        self.player.stop()
+        self._playing = False
+        self._playback_label = None
+        self._next_clip_at = None
 
     def _fault(self, reason):
         self.phase = Phase.FAULT
         self._generation += 1
         self.last_error = reason
-        self.player.stop()
+        self._stop_playback()
         try:
             self._hold()
         except Exception:
@@ -206,7 +194,7 @@ class WildlifeDeterrent:
             self._clear_tracking_state()
             try:
                 self._hold()
-                self.player.stop()
+                self._stop_playback()
                 if self.camera:
                     self.camera.home(yaw_deg=yaw_deg, pitch_deg=pitch_deg)
             except Exception as error:
@@ -217,7 +205,7 @@ class WildlifeDeterrent:
         with self._lock:
             if self.camera and not self.camera.health()["ok"]:
                 return self._fault(f"motor_fault: {self.camera.health()['fault']}")
-            self.player.stop()
+            self._stop_playback()
             self._hold()  # Cancel a still-running return ramp before accepting new targets.
             self.escape_tracker.reset()
             self._clear_tracking_state()
@@ -231,39 +219,40 @@ class WildlifeDeterrent:
         with self._lock:
             self.phase = Phase.STOPPED
             self._generation += 1
-            self.player.stop()
+            self._stop_playback()
             self._hold()
 
-    def _play(self, target, warning):
-        label = self.class_map[target.class_id]
-        catalog = self.warning_catalogs.get(label) if warning else self.catalog
+    def _start_playback(self, label):
+        catalog = self.catalogs.get(label)
         if catalog is None:
-            self.phase = Phase.WAIT_WARNING_ASSET
-            return self._event("missing_warning_asset", target)
+            return False
+        self._playback_label = label
+        self._playing = True
+        self._play_next()
+        return True
+
+    def _play_next(self):
+        """Next random clip for the same label (AudioCatalog: no repeat within one pass)."""
+        self._next_clip_at = None
         try:
-            file = catalog.next(label)
+            file = self.catalogs[self._playback_label].next(self._playback_label)
             self.player.play(file)
         except Exception as error:
-            return self._fault(f"playback_failed: {error}")
-        self.phase = Phase.PLAY_WARNING if warning else Phase.PLAY_THREAT
-        return self._event(
-            "warning_requested" if warning else "threat_requested", target, file
-        )
+            self._fault(f"playback_failed: {error}")
+            return
+        self._event("sound_requested", self.last_event.target, file)
 
     def _poll_audio(self, now):
-        if self.phase not in (Phase.PLAY_WARNING, Phase.PLAY_THREAT):
+        if not self._playing:
             return
         status = self.player.status()
         if status.state == "failed":
             self._fault(f"playback_failed: exit={status.returncode}; {status.error}")
         elif status.state == "completed":
-            self.phase = (
-                Phase.OBSERVE_WARNING
-                if self.phase == Phase.PLAY_WARNING
-                else Phase.OBSERVE_THREAT
-            )
-            self._observation_started = now
-            self._event("playback_completed", self.last_event.target, status.file)
+            if self._next_clip_at is None:
+                self._next_clip_at = now + settings.PLAYBACK_GAP_SECONDS
+            elif now >= self._next_clip_at:
+                self._play_next()
         elif status.state != "playing":
             self._fault(f"playback_interrupted: {status.state}")
 
@@ -288,7 +277,7 @@ class WildlifeDeterrent:
                 and now - self._last_result_at > settings.PERCEPTION_TIMEOUT_SECONDS
             )
             if camera_stale or perception_stale:
-                self.player.stop()
+                self._stop_playback()
                 self._hold()
                 self.escape_tracker.reset()
                 self._clear_tracking_state()
@@ -337,31 +326,21 @@ class WildlifeDeterrent:
             if d.class_id == self.torso_class_id
             and d.confidence >= self.torso_confidence
         ]
-        observe = self.phase in FROZEN_PHASES
-        if self.phase in (Phase.BASELINE_WARNING, Phase.BASELINE_THREAT):
-            ready = self.camera is not None and self.camera.frozen_ready()
-            if not ready:
-                self._frozen_ready_since = None
-            elif self._frozen_ready_since is None:
-                self._frozen_ready_since = now
-            # A result arriving after braking may have been CAPTURED during motion.
-            observe = ready and captured_at >= self._frozen_ready_since
         step = self.escape_tracker.step(
             captured_at,
             animals,
             torsos,
             *frame_size,
-            observe=observe,
+            observe=True,  # always evaluate; the motor never freezes anymore
         )
         self.last_escape_step = step
         # Termination is authoritative; never fall through to aim or audio on this frame.
         if step.terminated:
-            self.player.stop()
-            self._frozen_ready_since = None
+            self._stop_playback()
             # Slow, gentle return instead of holding in place or snapping back
             # at the normal stop speed — the animal was just seen backing
             # away or lost, so a sudden motion here is the opposite of what
-            # we want. A new target reaching AIM_WARNING overrides this ramp
+            # we want. A new target reaching TRACKING overrides this ramp
             # the moment camera.aim()/update() is called again.
             if self.camera:
                 self.camera.home(duration=settings.TERMINATION_RETURN_SECONDS)
@@ -381,37 +360,37 @@ class WildlifeDeterrent:
             # EscapeTracker already picked this target the moment it became
             # eligible (see its own one-frame selection); no extra multi-frame
             # debounce here — W is the gate, this is the first usable frame.
-            self.phase = Phase.AIM_WARNING
-        if self.phase in (Phase.AIM_WARNING, Phase.AIM_THREAT):
-            if self.camera is None:
-                return self._event("motor_disabled", target)
-            if step.matched_torso is None:
-                self.camera.missing()
-                return self._event("torso_missing_hold", target)
-            if self.camera.aim(step.matched_torso, frame_size, captured_at):
-                self._hold()
-                self.escape_tracker.reset_observation()
-                self.phase = (
-                    Phase.BASELINE_WARNING
-                    if self.phase == Phase.AIM_WARNING
-                    else Phase.BASELINE_THREAT
-                )
-            return self._event(self.phase.value, target)
-        if self.phase in (Phase.BASELINE_WARNING, Phase.BASELINE_THREAT):
+            self.phase = Phase.TRACKING
+        if self.camera is None:
+            return self._event("motor_disabled", target)
+        if step.matched_torso is None:
+            self.camera.missing()
+            return self._event("torso_missing_hold", target)
+        # Motor keeps tracking every frame regardless of playback state.
+        offset = self.camera.aim(step.matched_torso, frame_size, captured_at)
+        if self._playing:
+            # Only evaluate the exit band while the animal bbox is actually
+            # live (target is not None) — during a fallback bridge (bbox
+            # momentarily missing), keep playing regardless of offset. It
+            # often drifts off-center right as the bbox disappears, which
+            # isn't itself a reason to stop; tracking_lost/area/height still
+            # end things properly if the bridge runs out.
             if (
                 target is not None
-                and self.escape_tracker.baseline_ready
-                and target.confidence >= settings.MIN_PLAYBACK_CONFIDENCE
+                and offset is not None
+                and offset > settings.PLAYBACK_EXIT_FRACTION
             ):
-                return self._play(target, warning=self.phase == Phase.BASELINE_WARNING)
-        elif self.phase == Phase.OBSERVE_WARNING:
-            if now - self._observation_started >= settings.WARNING_OBSERVATION_SECONDS:
-                self.phase = Phase.AIM_THREAT
-                self.escape_tracker.reset_observation()
-                if self.camera:
-                    self.camera.reset()
-        # After one threat clip, stay frozen and observe until exit, loss or stop.
-        return self._event(self.phase.value, target)
+                self._stop_playback()
+        elif offset is not None and offset <= settings.PLAYBACK_ENTER_FRACTION:
+            # Pure red-dot (aim point) condition: the animal bbox itself
+            # (`target`) need not be live this frame -- a fallback-bridged
+            # torso that happens to be centered still starts playback. The
+            # species label comes from the tracker's locked class, which
+            # stays set through a fallback bridge even when `target` is None.
+            label = self.class_map.get(self.escape_tracker.target_class)
+            if label is not None:
+                self._start_playback(label)
+        return self._event("playing" if self._playing else "tracking", target)
 
 
 def process_frame(model, service, frame, captured_at, *, now=None, generation=None):

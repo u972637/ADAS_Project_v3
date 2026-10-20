@@ -6,12 +6,12 @@ from types import SimpleNamespace
 
 from animal.runtime import RuntimeGuard
 from animal.wildlife import Phase
-from tests.test_scenario import make_service, start_warning
+from tests.test_scenario import make_service, start_tracking
 
 
 class RuntimeTests(unittest.TestCase):
     def test_watchdog_runs_without_inference_thread_progress(self):
-        service = start_warning(make_service())
+        service = start_tracking(make_service())
         capture = SimpleNamespace(latest_capture_at=0.4)
         guard = RuntimeGuard(service, capture, read_stdin=False)
         try:
@@ -27,7 +27,7 @@ class RuntimeTests(unittest.TestCase):
         reader, writer = os.pipe()
         with os.fdopen(reader) as stdin:
             os.write(writer, b"par")
-            service = start_warning(make_service())
+            service = start_tracking(make_service())
             with patch("animal.runtime.sys.stdin", stdin):
                 guard = RuntimeGuard(service, SimpleNamespace(latest_capture_at=0.4))
                 try:

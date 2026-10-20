@@ -48,37 +48,21 @@ class AimingTests(unittest.TestCase):
         self.camera.aim(torso(500), (1000, 1000), 0.1)
         self.assertEqual(self.motor.commands[-1], (500, 500))
 
-    def test_convergence_requires_three_samples_dwell_and_motor_speed(self):
-        for t in (0, 0.1, 0.2, 0.3):
-            self.assertFalse(self.camera.aim(torso(500), (1000, 1000), t))
-        self.assertTrue(self.camera.aim(torso(500), (1000, 1000), 0.8))
-        self.motor.velocity = 0.21
-        self.assertFalse(self.camera.aim(torso(500), (1000, 1000), 0.9))
+    def test_offset_is_none_until_enough_samples_then_numeric(self):
+        # Fewer than AIM_AVERAGE_FRAMES samples: no usable reading yet.
+        self.assertIsNone(self.camera.aim(torso(500), (1000, 1000), 0))
+        self.assertIsNone(self.camera.aim(torso(500), (1000, 1000), 0.1))
+        # Third sample fills the window: dead center -> offset 0.0.
+        self.assertAlmostEqual(self.camera.aim(torso(500), (1000, 1000), 0.2), 0.0)
+        # Off-center: offset is the max per-axis fraction from center.
+        offset = self.camera.aim(torso(600), (1000, 1000), 0.3)
+        self.assertGreater(offset, 0.0)
 
-    def test_velocity_limit_accepts_boundary_and_checks_each_axis(self):
-        from unittest.mock import patch
-
-        for fast_axis in ("yaw", "pitch"):
-            self.camera.reset()
-            velocities = {"yaw": 0.2, "pitch": -0.2}
-            with patch.object(
-                self.motor,
-                "get_state",
-                side_effect=lambda axis: (0, velocities[axis], 0),
-            ):
-                for t in (0, 0.1, 0.2):
-                    self.assertFalse(self.camera.aim(torso(500), (1000, 1000), t))
-                self.assertTrue(self.camera.aim(torso(500), (1000, 1000), 0.8))
-                velocities[fast_axis] = -0.201
-                self.assertFalse(self.camera.aim(torso(500), (1000, 1000), 0.9))
-                velocities[fast_axis] = 0.1
-                self.assertFalse(self.camera.aim(torso(500), (1000, 1000), 1.0))
-                self.assertTrue(self.camera.aim(torso(500), (1000, 1000), 1.6))
-
-    def test_missing_frame_keeps_goal_and_resets_settle(self):
+    def test_missing_frame_keeps_goal_and_resets_averaging(self):
         for t in (0, 0.1, 0.2):
             self.camera.aim(torso(500), (1000, 1000), t)
         before = list(self.motor.commands)
         self.camera.missing()
         self.assertEqual(self.motor.commands, before)
-        self.assertFalse(self.camera.aim(torso(500), (1000, 1000), 2))
+        # Averaging window was cleared: back to None until refilled.
+        self.assertIsNone(self.camera.aim(torso(500), (1000, 1000), 2))

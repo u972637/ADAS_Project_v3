@@ -1,4 +1,5 @@
-"""Filter torso jitter and report convergence; never decides when to play audio."""
+"""Filter torso jitter and report the smoothed off-center distance; never
+decides when to play audio — that's a hysteresis band owned by wildlife.py."""
 
 from collections import deque
 import math
@@ -14,17 +15,22 @@ class TrackerCameraController:
         self.tracker_size = tracker_size
         self._samples = deque(maxlen=settings.AIM_AVERAGE_FRAMES)
         self._outlier = None
-        self._stable_since = None
 
     def reset(self):
         self._samples.clear()
-        self._outlier = self._stable_since = None
+        self._outlier = None
 
     def missing(self):
-        # Hold last motor goal across short detector gaps, but require fresh convergence.
+        # Hold last motor goal across short detector gaps, but require fresh averaging.
         self.reset()
 
     def aim(self, target, frame_size, timestamp):
+        """Send the smoothed target to the motor every call (motor keeps
+        tracking continuously). Returns the max per-axis fraction of the
+        smoothed point from center (0 = dead center), or None when there
+        isn't yet a usable reading (outlier rejected / still filling the
+        averaging window) — the caller should leave its playback state
+        unchanged on None rather than treat it as "far off center"."""
         width, height = frame_size
         if min(width, height) <= 0:
             raise ValueError("frame dimensions must be positive")
@@ -40,8 +46,7 @@ class TrackerCameraController:
                 or math.dist(point, self._outlier) > settings.AIM_MAX_JUMP_FRACTION / 2
             ):
                 self._outlier = point
-                self._stable_since = None
-                return False
+                return None
             self._samples.clear()
         self._outlier = None
         self._samples.append(point)
@@ -53,19 +58,9 @@ class TrackerCameraController:
         if abs(point[1] - 0.5) <= settings.AIM_DEADBAND_FRACTION:
             sy = 0.5
         self.tracker.update(sx * self.tracker_size[0], sy * self.tracker_size[1])
-        centered = all(
-            abs(v - 0.5) <= settings.AIM_TOLERANCE_FRACTION for v in (*point, sx, sy)
-        )
-        slow = all(
-            abs(self.tracker.get_state(axis)[1]) <= settings.AIM_MAX_VELOCITY_RAD_S
-            for axis in ("yaw", "pitch")
-        )
-        if not centered or not slow or len(self._samples) < settings.AIM_AVERAGE_FRAMES:
-            self._stable_since = None
-            return False
-        if self._stable_since is None:
-            self._stable_since = timestamp
-        return timestamp - self._stable_since >= settings.AIM_SETTLE_SECONDS
+        if len(self._samples) < settings.AIM_AVERAGE_FRAMES:
+            return None
+        return max(abs(sx - 0.5), abs(sy - 0.5))
 
     def hold(self):
         self.reset()
@@ -74,13 +69,6 @@ class TrackerCameraController:
     def home(self, duration=None, yaw_deg=None, pitch_deg=None):
         self.reset()
         self.tracker.go_default(duration=duration, yaw_deg=yaw_deg, pitch_deg=pitch_deg)
-
-    def frozen_ready(self):
-        """Do not collect escape baselines while the reference is still braking."""
-        return self.tracker.motion_complete() and all(
-            abs(self.tracker.get_state(axis)[1]) <= settings.AIM_MAX_VELOCITY_RAD_S
-            for axis in ("yaw", "pitch")
-        )
 
     def health(self):
         return self.tracker.health()
