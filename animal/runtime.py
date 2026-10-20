@@ -6,6 +6,8 @@ Experiment launchers may call this module; this module never imports them.
 from __future__ import annotations
 
 from contextlib import ExitStack
+import csv
+from datetime import datetime
 import logging
 import os
 import select
@@ -19,6 +21,21 @@ from animal.perception import validate_model_classes
 from animal.overlay import put_text_kr
 
 logger = logging.getLogger(__name__)
+
+
+def _log_torso_size(matched_torso):
+    """Append the red-dot torso's pixel width/height/area to settings.TORSO_SIZE_LOG_PATH."""
+    path = settings.TORSO_SIZE_LOG_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    is_new = not path.exists()
+    x1, y1, x2, y2 = matched_torso.xyxy
+    width, height = x2 - x1, y2 - y1
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    with path.open("a", newline="") as handle:
+        writer = csv.writer(handle)
+        if is_new:
+            writer.writerow(["timestamp", "width_px", "height_px", "area_px"])
+        writer.writerow([stamp, width, height, width * height])
 
 
 class RuntimeGuard:
@@ -326,6 +343,14 @@ def run_session(
                         guard.command("stop")
                     elif key == ord("w"):
                         guard.command("resume")
+                    elif key == ord("u"):
+                        selected = service.last_escape_step
+                        if (
+                            selected
+                            and not selected.terminated
+                            and selected.matched_torso
+                        ):
+                            _log_torso_size(selected.matched_torso)
         except KeyboardInterrupt:
             pass
         finally:

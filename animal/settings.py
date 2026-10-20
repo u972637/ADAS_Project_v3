@@ -4,6 +4,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_PATH = PROJECT_ROOT / "assets/models/weights.pt"
+LOG_DIR = PROJECT_ROOT / "log"
+# Menu 1/2 'u' key: append the current red-dot torso's pixel width/height here.
+TORSO_SIZE_LOG_PATH = LOG_DIR / "torso_size.csv"
 CAMERA_INDEX = 4
 ENABLE_MOTOR = True  # Production main.py runs detection, control and audio together.
 START_PAUSED = False  # main.py --start-paused enables W/resume gating when needed.
