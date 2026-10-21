@@ -24,7 +24,7 @@ BOAR, TORSO = 0, 2
 
 def tracker(**overrides):
     kwargs = dict(
-        track_lost_seconds=settings.TRACK_LOST_SECONDS,
+        track_lost_seconds=settings.ORANGE_TIMEOUT_SECONDS,
         reselect_grace_seconds=settings.RESELECT_GRACE_SECONDS,
         area_baseline_seconds=settings.AREA_BASELINE_SECONDS,
         area_smooth_seconds=settings.AREA_SMOOTH_SECONDS,
@@ -123,23 +123,51 @@ class EscapeTrackerTest(unittest.TestCase):
             tracker(distance_metric="volume")
 
 
+class LockStartTest(unittest.TestCase):
+    def test_a_bbox_without_a_matched_torso_is_not_locked(self):
+        trk = tracker()
+        animals, _ = boxes(640.0, 480.0, 300.0, 160.0)
+        step = trk.step(0.0, animals, [], *SIZE)
+        self.assertIsNone(trk.target_id)
+        self.assertIsNone(step.selected)
+
+    def test_a_torso_outside_every_bbox_does_not_start_a_lock(self):
+        trk = tracker()
+        animals, _ = boxes(640.0, 480.0, 300.0, 160.0)
+        stray = Detection(TORSO, 0.9, (900.0, 700.0, 960.0, 760.0))
+        trk.step(0.0, animals, [stray], *SIZE)
+        self.assertIsNone(trk.target_id)
+
+    def test_the_largest_bbox_that_has_a_torso_wins_not_the_largest_overall(self):
+        trk = tracker()
+        big_no_torso = Detection(BOAR, 0.9, (100.0, 100.0, 700.0, 700.0), 1)
+        small = Detection(BOAR, 0.9, (800.0, 200.0, 1000.0, 400.0), 2)
+        small_torso = Detection(TORSO, 0.8, (850.0, 250.0, 950.0, 320.0))
+        step = trk.step(0.0, [big_no_torso, small], [small_torso], *SIZE)
+        self.assertEqual(trk.target_id, 2)
+        self.assertIs(step.selected, small)
+
+    def test_two_candidates_with_torsos_pick_the_larger_bbox(self):
+        trk = tracker()
+        big = Detection(BOAR, 0.9, (100.0, 100.0, 700.0, 700.0), 1)
+        big_torso = Detection(TORSO, 0.8, (300.0, 300.0, 500.0, 450.0))
+        small = Detection(BOAR, 0.9, (800.0, 200.0, 1000.0, 400.0), 2)
+        small_torso = Detection(TORSO, 0.8, (850.0, 250.0, 950.0, 320.0))
+        trk.step(0.0, [big, small], [big_torso, small_torso], *SIZE)
+        self.assertEqual(trk.target_id, 1)
+
+
 class UnifiedLostTimerTest(unittest.TestCase):
-    def test_torso_never_matching_eventually_times_out_even_with_healthy_bbox(self):
-        """The animal bbox keeps being tracked every single frame (never a
-        gap), but its torso is never detected at all -- used to stall
-        forever in STATE_TORSO_MISSING with no timeout, since the old
-        lost-timer only ever advanced when the BBOX was absent. Now the
-        timer is driven by matched_torso alone, so this still releases on
-        track_lost_seconds."""
+    def test_nothing_to_track_for_the_timeout_releases_the_lock(self):
+        """No torso AND no bbox to follow for track_lost_seconds -> released."""
         trk = tracker(track_lost_seconds=1.0)
-        animal, _ = boxes(640.0, 480.0, 300.0, 160.0)
-        animal = animal[0]
-        trk.step(0.0, [animal], [], *SIZE)
+        animals, torsos = boxes(640.0, 480.0, 300.0, 160.0)
+        trk.step(0.0, animals, torsos, *SIZE)  # a lock needs a torso to start
         self.assertEqual(trk.target_id, 1)
 
         step = None
         for i in range(1, 60):
-            step = trk.step(i * 0.04, [animal], [], *SIZE)
+            step = trk.step(i * 0.04, [], [], *SIZE)
             if step.terminated:
                 break
         self.assertTrue(step.terminated)
@@ -164,46 +192,239 @@ class UnifiedLostTimerTest(unittest.TestCase):
         self.assertFalse(step.terminated)
 
 
-class ReidentifyAreaPriorityTest(unittest.TestCase):
-    def test_bigger_torso_wins_over_nearer_smaller_one(self):
-        trk = tracker()  # defaults: radius_multiplier=1.0, bbox grace=1.0s
-        animals, torsos = boxes(640.0, 480.0, 300.0, 160.0)  # last_torso width=180
+class NearestTorsoTest(unittest.TestCase):
+    def test_nearest_torso_wins_even_when_a_farther_one_is_bigger(self):
+        trk = tracker()  # radius = 1.0 x last width (180) here
+        animals, torsos = boxes(640.0, 480.0, 300.0, 160.0)  # last torso center (640, 464)
         trk.step(0.0, animals, torsos, *SIZE)
-        trk.step(0.04, [], [], *SIZE)  # full gap
+        trk.step(0.04, [], [], *SIZE)
 
-        # Candidate A: closer (dist=90) but a small torso.
+        # A: nearer (dist 90) but small. B: farther (dist 120, still inside) and bigger.
         animal_a = Detection(BOAR, 0.9, (500.0, 400.0, 600.0, 560.0), 10)
-        torso_a = Detection(TORSO, 0.8, (520.0, 434.0, 580.0, 494.0))  # 60x60
-        # Candidate B: farther (dist=120, still within radius=180) but a
-        # much bigger torso -- should win despite being less close.
+        torso_a = Detection(TORSO, 0.8, (520.0, 434.0, 580.0, 494.0))
         animal_b = Detection(BOAR, 0.9, (650.0, 400.0, 850.0, 560.0), 11)
-        torso_b = Detection(TORSO, 0.8, (690.0, 434.0, 830.0, 494.0))  # 140x60
+        torso_b = Detection(TORSO, 0.8, (690.0, 434.0, 830.0, 494.0))
 
         step = trk.step(0.08, [animal_a, animal_b], [torso_a, torso_b], *SIZE)
-        self.assertIs(step.selected, animal_b)
-        self.assertEqual(trk.target_id, 11)
+        self.assertIs(step.selected, animal_a)
+        self.assertEqual(trk.target_id, 10)
 
 
-class BboxRetargetGraceTest(unittest.TestCase):
-    def test_far_candidate_rejected_before_grace_then_adopted_after(self):
-        trk = tracker(bbox_retarget_grace_seconds=0.5)
+def lock_small(trk):
+    """Lock on an animal with a small (40 px wide) torso centered at (700, 500)."""
+    animal = Detection(BOAR, 0.9, (600.0, 400.0, 800.0, 600.0), 1)
+    torso = Detection(TORSO, 0.8, (680.0, 480.0, 720.0, 520.0))
+    trk.step(0.0, [animal], [torso], *SIZE)
+    assert trk.target_id == 1
+    return animal, torso
+
+
+def torso_at(cx, cy, w=40.0):
+    return Detection(TORSO, 0.8, (cx - w / 2, cy - w / 2, cx + w / 2, cy + w / 2))
+
+
+class PositionMatchTest(unittest.TestCase):
+    def test_radius_is_a_circle_with_a_fixed_pixel_floor(self):
+        # Width-based radius alone (1.8 x 40 = 72 px) is tiny for a far target.
+        no_floor = tracker(torso_bridge_radius_multiplier=1.8)
+        lock_small(no_floor)
+        no_floor.step(0.04, [], [], *SIZE)
+        self.assertIsNone(no_floor.step(0.08, [], [torso_at(900, 500)], *SIZE).matched_torso)
+
+        floor = tracker(torso_bridge_radius_multiplier=1.8, torso_bridge_min_radius_px=250.0)
+        lock_small(floor)
+        floor.step(0.04, [], [], *SIZE)
+        got = floor.step(0.08, [], [torso_at(900, 500)], *SIZE)  # 200 px away
+        self.assertIsNotNone(got.matched_torso)
+
+    def test_the_floor_is_a_circle_not_a_square(self):
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        lock_small(trk)
+        trk.step(0.04, [], [], *SIZE)
+        # dx = dy = 180 -> inside a +-250 square, but 254.6 px from the center.
+        self.assertIsNone(trk.step(0.08, [], [torso_at(880, 680)], *SIZE).matched_torso)
+        # dx = dy = 170 -> 240.4 px: inside the circle.
+        trk2 = tracker(torso_bridge_min_radius_px=250.0)
+        lock_small(trk2)
+        trk2.step(0.04, [], [], *SIZE)
+        self.assertIsNotNone(trk2.step(0.08, [], [torso_at(870, 670)], *SIZE).matched_torso)
+
+    def test_the_nearest_candidate_inside_the_circle_is_chosen(self):
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        lock_small(trk)
+        trk.step(0.04, [], [], *SIZE)
+        near, far = torso_at(780, 500), torso_at(900, 500)
+        step = trk.step(0.08, [], [far, near], *SIZE)
+        self.assertEqual(step.matched_torso.xyxy, near.xyxy)
+
+    def test_reference_point_replaces_the_last_torso_position(self):
+        # The orange point moved toward center: the torso is expected there,
+        # not where it used to be.
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        lock_small(trk)
+        trk.step(0.04, [], [], *SIZE)
+        far = torso_at(1100, 500)  # 400 px from the last torso position
+        self.assertIsNone(trk.step(0.08, [], [far], *SIZE).matched_torso)
+        step = trk.step(0.12, [], [far], *SIZE, reference=(1050.0, 500.0))
+        self.assertIsNotNone(step.matched_torso)
+
+    def test_same_id_bbox_with_its_torso_matches_at_any_distance(self):
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        lock_small(trk)
+        # The same bbox id reappears far away (e.g. after a big camera move)
+        # with a torso inside it: no distance check applies.
+        moved = Detection(BOAR, 0.9, (1500.0, 400.0, 1700.0, 600.0), 1)
+        step = trk.step(0.04, [moved], [torso_at(1600, 500)], 2592, 1944)
+        self.assertIs(step.selected, moved)
+        self.assertIsNotNone(step.matched_torso)
+
+    def test_target_id_follows_the_bbox_that_holds_the_matched_torso(self):
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        lock_small(trk)
+        trk.step(0.04, [], [], *SIZE)
+        other_id = Detection(BOAR, 0.9, (650.0, 400.0, 850.0, 600.0), 77)
+        step = trk.step(0.08, [other_id], [torso_at(760, 500)], *SIZE)
+        self.assertEqual(trk.target_id, 77)
+        self.assertIs(step.selected, other_id)
+
+    def test_a_torso_inside_another_species_bbox_is_skipped_for_the_next_one(self):
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        lock_small(trk)
+        trk.step(0.04, [], [], *SIZE)
+        deer = Detection(1, 0.9, (700.0, 400.0, 860.0, 600.0), 5)
+        nearer_in_deer = torso_at(780, 500)       # inside the deer bbox: nearest
+        farther_bare = torso_at(850, 640)         # no bbox around it
+        step = trk.step(0.08, [deer], [nearer_in_deer, farther_bare], *SIZE)
+        self.assertEqual(step.matched_torso.xyxy, farther_bare.xyxy)
+        self.assertEqual(trk.target_class, BOAR)
+
+
+class BboxFollowTest(unittest.TestCase):
+    def test_torso_gone_but_same_id_bbox_visible_follows_the_bbox(self):
+        trk = tracker(track_lost_seconds=1.0, torso_bridge_min_radius_px=250.0)
+        animal, _ = lock_small(trk)
+        step = trk.step(0.04, [animal], [], *SIZE)
+        self.assertIsNone(step.matched_torso)
+        self.assertIs(step.followed_bbox, animal)
+        self.assertIs(step.selected, animal)
+        self.assertFalse(step.terminated)
+
+    def test_following_a_bbox_keeps_the_lock_alive_indefinitely(self):
+        trk = tracker(track_lost_seconds=1.0, torso_bridge_min_radius_px=250.0)
+        animal, _ = lock_small(trk)
+        for i in range(1, 100):  # ~4 s, far past the 1 s timeout
+            step = trk.step(i * 0.04, [animal], [], *SIZE)
+            self.assertFalse(step.terminated)
+        # ...until the bbox is gone too: then the timer runs and releases.
+        released = None
+        for i in range(100, 160):
+            step = trk.step(i * 0.04, [], [], *SIZE)
+            if step.terminated:
+                released = step
+                break
+        self.assertIsNotNone(released)
+        self.assertEqual(released.termination_reason, "tracking_lost")
+
+    def test_a_returning_bbox_with_a_new_id_near_the_old_spot_is_followed(self):
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        lock_small(trk)
+        trk.step(0.04, [], [], *SIZE)
+        new_id = Detection(BOAR, 0.9, (680.0, 400.0, 880.0, 600.0), 42)
+        step = trk.step(0.08, [new_id], [], *SIZE)
+        self.assertIs(step.followed_bbox, new_id)
+        self.assertEqual(trk.target_id, 42)
+
+    def test_the_reference_is_the_rectangle_not_only_the_center(self):
+        # A big bbox: the old torso spot is inside it but 380 px from its center.
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        lock_small(trk)                          # last torso center (700, 500)
+        trk.step(0.04, [], [], *SIZE)
+        big = Detection(BOAR, 0.9, (700.0, 100.0, 1500.0, 900.0), 43)  # center (1100, 500)
+        step = trk.step(0.08, [big], [], *SIZE)
+        self.assertIs(step.followed_bbox, big)
+
+    def test_a_far_bbox_or_another_species_is_not_followed(self):
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        lock_small(trk)
+        trk.step(0.04, [], [], *SIZE)
+        far = Detection(BOAR, 0.9, (1400.0, 100.0, 1600.0, 300.0), 44)
+        deer_here = Detection(1, 0.9, (600.0, 400.0, 800.0, 600.0), 45)
+        step = trk.step(0.08, [far, deer_here], [], *SIZE)
+        self.assertIsNone(step.followed_bbox)
+        self.assertIsNone(step.selected)
+
+    def test_a_torso_always_beats_following_the_bbox(self):
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        animal, _ = lock_small(trk)
+        # Same-id bbox, but its torso moved outside the bbox: matched by position.
+        stray = torso_at(700, 640)
+        step = trk.step(0.04, [animal], [stray], *SIZE)
+        self.assertIsNotNone(step.matched_torso)
+        self.assertIsNone(step.followed_bbox)
+
+    def test_the_torso_taken_over_once_it_shows_up_inside_the_followed_bbox(self):
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        animal, _ = lock_small(trk)
+        trk.step(0.04, [animal], [], *SIZE)                 # bbox only
+        step = trk.step(0.08, [animal], [torso_at(690, 520)], *SIZE)
+        self.assertIsNotNone(step.matched_torso)
+        self.assertIsNone(step.followed_bbox)
+
+    def test_followed_bbox_center_becomes_the_next_reference(self):
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        animal, _ = lock_small(trk)                         # bbox center (700, 500)
+        moved = Detection(BOAR, 0.9, (900.0, 400.0, 1100.0, 600.0), 1)  # center (1000, 500)
+        trk.step(0.04, [moved], [], *SIZE)                  # followed: reference -> (1000, 500)
+        # Same bbox vanishes; a torso at (1150, 500) is 150 px from the followed
+        # center but 450 px from the original torso.
+        step = trk.step(0.08, [], [torso_at(1150, 500)], *SIZE)
+        self.assertIsNotNone(step.matched_torso)
+
+
+class ReleaseAndCooldownTest(unittest.TestCase):
+    def _lost(self, trk):
+        """Lock, then lose everything until the lock is released; returns the release time."""
         animals, torsos = boxes(640.0, 480.0, 300.0, 160.0)
         trk.step(0.0, animals, torsos, *SIZE)
-        trk.step(0.04, [], [], *SIZE)  # bbox (and torso) gap starts here
+        t = 0.0
+        while True:
+            t += 0.1
+            if trk.step(t, [], [], *SIZE).terminated:
+                return t
 
-        far_animal = Detection(BOAR, 0.9, (1000.0, 800.0, 1200.0, 900.0), 99)
-        far_torso = Detection(TORSO, 0.8, (1020.0, 820.0, 1180.0, 880.0))
+    def test_no_new_lock_for_the_whole_cooldown_then_any_animal_is_allowed(self):
+        trk = tracker(track_lost_seconds=1.0, reselect_grace_seconds=5.0)
+        released = self._lost(trk)
+        animals, torsos = boxes(640.0, 480.0, 300.0, 160.0)
+        trk.step(released + 4.9, animals, torsos, *SIZE)
+        self.assertIsNone(trk.target_id)                    # still banned
+        trk.step(released + 5.1, animals, torsos, *SIZE)
+        self.assertEqual(trk.target_id, 1)                  # the SAME id may be locked again
 
-        # Still within grace (0.1 - 0.04 = 0.06s < 0.5s): too far, rejected.
-        step = trk.step(0.1, [far_animal], [far_torso], *SIZE)
-        self.assertIsNone(step.selected)
-        self.assertEqual(trk.target_id, 1)
+    def test_area_escape_also_starts_the_same_cooldown(self):
+        trk = tracker(reselect_grace_seconds=5.0)
+        end = first_end(trk, sequence("walk_away"))
+        self.assertEqual(end[1], AREA_REASON)
+        animals, torsos = boxes(640.0, 480.0, 300.0, 160.0)
+        trk.step(end[0] + 4.0, animals, torsos, *SIZE)
+        self.assertIsNone(trk.target_id)
 
-        # Grace expired (0.6 - 0.04 = 0.56s >= 0.5s): same candidate, same
-        # distance -- now adopted, radius no longer applies.
-        step = trk.step(0.6, [far_animal], [far_torso], *SIZE)
-        self.assertIs(step.selected, far_animal)
-        self.assertEqual(trk.target_id, 99)
+    def test_baseline_is_remeasured_when_the_target_bbox_id_changes(self):
+        trk = tracker(torso_bridge_min_radius_px=250.0)
+        for i in range(0, 30):                              # 1.2 s on a big animal
+            animals, torsos = boxes(640.0, 480.0, 300.0, 160.0)
+            trk.step(i * 0.04, animals, torsos, *SIZE)
+        self.assertTrue(trk.baseline_ready)
+        # A much smaller animal (new id) takes over the torso spot: its size is
+        # not "the first animal shrinking", so no baseline carries over.
+        small = Detection(BOAR, 0.9, (590.0, 440.0, 690.0, 520.0), 9)
+        small_torso = Detection(TORSO, 0.8, (620.0, 460.0, 660.0, 500.0))
+        step = trk.step(1.2, [small], [small_torso], *SIZE)
+        self.assertEqual(trk.target_id, 9)
+        self.assertFalse(trk.baseline_ready)
+        for i in range(1, 60):                              # 2.4 s as the small animal
+            step = trk.step(1.2 + i * 0.04, [small], [small_torso], *SIZE)
+            self.assertFalse(step.terminated)
 
 
 class TorsoBridgeRadiusTest(unittest.TestCase):

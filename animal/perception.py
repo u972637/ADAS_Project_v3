@@ -135,78 +135,94 @@ def validate_model_classes(
             )
 
 
-def _nearest_torso(
-    center: tuple[float, float], max_distance: float, torsos: Sequence[Detection]
+def _containing_animal(
+    animals: Sequence[Detection], torso: Detection
 ) -> Detection | None:
-    """Closest torso to center within max_distance pixels.
-
-    Used to bridge a momentary animal-bbox gap by distance to the last
-    KNOWN TORSO POSITION (updated every frame), not a frozen animal bbox —
-    a moving target keeps a moving search point instead of drifting outside
-    a stale window."""
-    cx0, cy0 = center
-    best, best_dist = None, max_distance
-    for torso in torsos:
-        if torso.area <= 0:
-            continue
-        tcx, tcy = torso.center
-        dist = math.hypot(tcx - cx0, tcy - cy0)
-        if dist <= best_dist:
-            best, best_dist = torso, dist
-    return best
+    """A bbox whose area holds the torso's center (any, not a one-to-one pairing)."""
+    tcx, tcy = torso.center
+    for animal in animals:
+        x1, y1, x2, y2 = animal.xyxy
+        if x1 <= tcx <= x2 and y1 <= tcy <= y2:
+            return animal
+    return None
 
 
-def _reidentify_by_torso(
-    last_torso: tuple[float, float, float] | None,
-    target_class: int,
-    excluded: Mapping[int, float | None],
+def _match_by_position(
+    last_torso: tuple[float, float, float],
+    reference: tuple[float, float] | None,
+    target_class: int | None,
     animals: Sequence[Detection],
     torsos: Sequence[Detection],
-    radius_multiplier: float = 1.0,
-    *,
-    unrestricted: bool = False,
-) -> tuple[Detection, Detection] | None:
-    """Recover from a ByteTrack ID switch on the same real individual: a
-    bbox (possibly under a NEW track_id) directly contains a torso
-    (ordinary bbox-containment matching via torso_matches(), never a bare
-    position-only torso -- this only ever considers a torso BACKED BY SOME
-    BBOX this frame). Among qualifying candidates, the BIGGEST torso wins
-    (not the nearest) -- a bigger torso is the more confident, closer-to-
-    camera read on "this is probably the real individual."
+    pairing: Mapping[int, int],
+    width_multiplier: float,
+    min_radius_px: float,
+) -> tuple[Detection | None, Detection | None]:
+    """Pick the torso that is "the same one" as the tracked torso, by position.
 
-    Normally (unrestricted=False) a candidate must also sit within
-    radius_multiplier torso-widths of the last confirmed torso position
-    (last_torso), for a quick same-spot ID-switch recovery. Once the
-    locked individual's own bbox has been missing long enough
-    (EscapeTracker.bbox_retarget_grace_seconds), the caller passes
-    unrestricted=True to drop that radius limit entirely and search the
-    whole frame -- giving up on "probably the same exact individual" in
-    favor of "whichever same-species animal is most confidently visible
-    right now." Always restricted to the same species as the current lock
-    -- never bridges a species change."""
-    matches = torso_matches(animals, torsos)
-    if not unrestricted:
-        if last_torso is None:
-            return None
-        cx0, cy0 = last_torso[:2]
-        max_distance = last_torso[2] * radius_multiplier
-    best, best_area = None, -1.0
-    for ai, animal in enumerate(animals):
-        if (
-            animal.track_id is None
-            or animal.track_id in excluded
-            or animal.class_id != target_class
-            or ai not in matches
-        ):
+    Candidates are torsos within a CIRCLE (center = `reference`, the previous
+    frame's tracking point -- the last torso center while red, the current
+    orange point while orange; radius = max(min_radius_px, width_multiplier *
+    last torso width)). The nearest wins; ids and confidence are not looked at.
+    If the candidate sits inside a green bbox of a DIFFERENT species it is
+    skipped; a torso with no bbox around it carries no species, so it is
+    accepted (a known, accepted risk). Returns (torso, owner_bbox_or_None).
+    """
+    cx0, cy0 = reference if reference is not None else last_torso[:2]
+    radius = max(min_radius_px, last_torso[2] * width_multiplier)
+    owner_of = {ti: animals[ai] for ai, ti in pairing.items()}
+    candidates = sorted(
+        (math.hypot(t.center[0] - cx0, t.center[1] - cy0), ti)
+        for ti, t in enumerate(torsos)
+        if t.area > 0
+    )
+    for distance, ti in candidates:
+        if distance > radius:
+            break
+        owner = owner_of.get(ti)
+        if owner is None:
+            owner = _containing_animal(animals, torsos[ti])
+        if owner is not None and owner.class_id != target_class:
             continue
-        torso = torsos[matches[ai]]
-        if not unrestricted:
-            tcx, tcy = torso.center
-            if math.hypot(tcx - cx0, tcy - cy0) > max_distance:
-                continue
-        if torso.area > best_area:
-            best, best_area = (animal, torso), torso.area
-    return best
+        return torsos[ti], owner
+    return None, None
+
+
+def _rect_distance(point: tuple[float, float], xyxy) -> float:
+    """0 if the point is inside the box, else the distance to its nearest edge."""
+    x, y = point
+    x1, y1, x2, y2 = xyxy
+    return math.hypot(max(x1 - x, 0.0, x - x2), max(y1 - y, 0.0, y - y2))
+
+
+def _find_bbox_near(
+    last_torso: tuple[float, float, float],
+    reference: tuple[float, float] | None,
+    target_class: int | None,
+    animals: Sequence[Detection],
+    width_multiplier: float,
+    min_radius_px: float,
+) -> Detection | None:
+    """The green bbox to follow by its center when no torso is matched.
+
+    Same species only (a bbox tells us the species). It must lie within the
+    same circle used for torsos (center = previous tracking point, radius =
+    max(min_radius_px, width_multiplier * last torso width)), measured to the
+    bbox RECTANGLE (0 if the point is inside it): a big bbox's center can be
+    far from where its torso is. Nearest wins, ties broken by center distance.
+    """
+    cx0, cy0 = reference if reference is not None else last_torso[:2]
+    radius = max(min_radius_px, last_torso[2] * width_multiplier)
+    best = None
+    for animal in animals:
+        if animal.class_id != target_class or animal.area <= 0:
+            continue
+        distance = _rect_distance((cx0, cy0), animal.xyxy)
+        if distance > radius:
+            continue
+        key = (distance, math.hypot(animal.center[0] - cx0, animal.center[1] - cy0))
+        if best is None or key < best[0]:
+            best = (key, animal)
+    return None if best is None else best[1]
 
 
 def torso_matches(
@@ -434,6 +450,9 @@ class EscapeStep:
     state: str
     terminated: bool
     termination_reason: str
+    # A green bbox followed by its CENTER because no torso could be matched
+    # this frame (it is also `selected`). None whenever a torso is matched.
+    followed_bbox: Detection | None = None
 
 
 class EscapeTracker:
@@ -461,7 +480,7 @@ class EscapeTracker:
         distance_metric: str = "area",
         min_bbox_height_px: float = 0.0,
         torso_bridge_radius_multiplier: float = 1.0,
-        bbox_retarget_grace_seconds: float = 1.0,
+        torso_bridge_min_radius_px: float = 0.0,
     ) -> None:
         if track_lost_seconds <= 0:
             raise ValueError("track_lost_seconds must be > 0")
@@ -469,29 +488,18 @@ class EscapeTracker:
             raise ValueError("min_bbox_height_px must be >= 0")
         if torso_bridge_radius_multiplier <= 0:
             raise ValueError("torso_bridge_radius_multiplier must be > 0")
-        if bbox_retarget_grace_seconds <= 0:
-            raise ValueError("bbox_retarget_grace_seconds must be > 0")
+        if torso_bridge_min_radius_px < 0:
+            raise ValueError("torso_bridge_min_radius_px must be >= 0")
         self.track_lost_seconds = track_lost_seconds
         self.reselect_grace_seconds = reselect_grace_seconds
-        # The position-based bridge (gap fallback / ID-switch reidentify)
-        # searches within one torso-WIDTH of the last confirmed torso by
-        # default (multiplier=1.0) -- fine for a single dropped frame, but a
-        # real animal can easily move more than its own body-width during a
-        # half-second-plus gap, which made a re-appearing torso stay
-        # unmatched (yellow, never red again) until the full
-        # track_lost_seconds timeout released and re-selected it from
-        # scratch. Widen the search radius by this multiplier to tolerate
-        # realistic movement during short gaps.
+        # Re-matching the tracked torso after a gap is by POSITION: the nearest
+        # torso inside a circle around the previous tracking point, radius
+        # max(torso_bridge_min_radius_px, torso_bridge_radius_multiplier *
+        # last torso width). The fixed floor matters for small/far torsos,
+        # whose width-based radius would be tiny next to how far a target (or
+        # the camera) moves in a few frames.
         self.torso_bridge_radius_multiplier = torso_bridge_radius_multiplier
-        # Once the locked individual's own bbox (not just its torso) has
-        # been absent for this long, ID-switch reidentify stops requiring
-        # the candidate to be near the last torso position: it searches the
-        # WHOLE frame for any same-species torso that's confirmed by some
-        # bbox this frame, preferring the biggest. Below this grace period,
-        # reidentify stays radius-limited (quick recovery of the SAME
-        # individual nearby); the plain position-only bridge (no bbox
-        # anywhere in frame) is unaffected either way.
-        self.bbox_retarget_grace_seconds = bbox_retarget_grace_seconds
+        self.torso_bridge_min_radius_px = torso_bridge_min_radius_px
         # Absolute floor, independent of the AreaMonitor's baseline-relative
         # ratio check: too far away / too small to track reliably, regardless
         # of what size it started at. 0 disables this check.
@@ -510,22 +518,19 @@ class EscapeTracker:
         self.target_class: int | None = None
         self._lost_since: float | None = None  # 타겟이 안 보이기 시작한 시각
         self._area_monitor = AreaMonitor(**self._area_kwargs)
-        # 해제된 ID -> 마지막으로 보였던(= 계속 보이는 중이면 매 프레임 갱신)
-        # 이후 안 보이기 시작한 시각. None 이면 아직 계속 보이는 중(= 여전히
-        # 재선정 금지).
-        self._excluded: dict[int, float | None] = {}
+        # After a release (fled / lost) NO new lock is allowed until this time,
+        # whatever the ids are (re-locking the same animal is allowed after).
         self._reselect_at: float | None = None
+        # The bbox id the area/height baseline was measured on. When the target
+        # bbox changes to another id the baseline no longer describes it (it
+        # may be a different animal), so it is re-measured from scratch.
+        self._monitored_id: int | None = None
         # Last known (center_x, center_y, width) of the locked target's
         # matched torso, updated every frame it's found (live match or
         # bridged). Lets a momentary ByteTrack gap (animal box flickering
         # off) keep following the torso near where it actually is now,
         # rather than a frozen box from the last real sighting.
         self._last_torso: tuple[float, float, float] | None = None
-        # Time since the locked individual's own bbox (selected) was last
-        # actually present -- independent of self._lost_since, which is
-        # purely about torso-match success (bbox or not). Drives the
-        # reidentify widening above; never releases the lock by itself.
-        self._bbox_lost_since: float | None = None
 
     def step(
         self,
@@ -536,17 +541,11 @@ class EscapeTracker:
         height: int,
         *,
         observe: bool = True,
+        reference: tuple[float, float] | None = None,
     ) -> EscapeStep:
-        visible_ids = {d.track_id for d in animals if d.track_id is not None}
-        for banned_id, absent_since in list(self._excluded.items()):
-            if banned_id in visible_ids:
-                self._excluded[banned_id] = None  # 아직 화면에 있음 — 재선정 계속 금지
-            else:
-                if absent_since is None:
-                    self._excluded[banned_id] = timestamp
-                elif timestamp - absent_since >= self.track_lost_seconds:
-                    del self._excluded[banned_id]
-
+        """One frame. `reference` (pixels) overrides the center used to find
+        the tracked torso again: the caller passes the current orange point
+        while the motor is chasing the virtual target; None = the last torso."""
         selected = (
             next(
                 (
@@ -563,18 +562,21 @@ class EscapeTracker:
         if self.target_id is None and (
             self._reselect_at is None or timestamp >= self._reselect_at
         ):
-            eligible = [
-                d
-                for d in animals
-                if d.track_id is not None and d.track_id not in self._excluded
-            ]
-            if eligible:
-                selected = max(eligible, key=lambda d: d.area)
+            eligible = [d for d in animals if d.track_id is not None]
+            # A lock starts only on a bbox that ALREADY has a matched torso:
+            # the aim point is the torso, so a bbox alone is not trackable.
+            # Among those, the largest wins (not the largest overall -- a
+            # bigger bbox with no torso must not block a trackable animal).
+            with_torso = [
+                eligible[i] for i in torso_matches(eligible, torsos)
+            ] if eligible else []
+            if with_torso:
+                selected = max(with_torso, key=lambda d: d.area)
                 self.target_id = selected.track_id
                 self.target_class = selected.class_id
                 self._lost_since = None
-                self._bbox_lost_since = None
                 self._area_monitor = AreaMonitor(**self._area_kwargs)
+                self._monitored_id = selected.track_id
                 self._reselect_at = None
 
         if self.target_id is None:
@@ -586,91 +588,67 @@ class EscapeTracker:
             )
             return EscapeStep(None, None, state, False, "")
 
+        # --- find the tracked torso in this frame ---------------------------
+        by_id = selected  # the locked id's own bbox this frame, if it is visible
+        matched_torso: Detection | None = None
+        owner: Detection | None = None
+        pairing = torso_matches(animals, torsos)  # animal index -> torso index
+        if by_id is not None:
+            ti = pairing.get(next(i for i, a in enumerate(animals) if a is by_id))
+            if ti is not None:
+                # Same id and the torso is inside its bbox: no distance check, so
+                # a big camera move between two frames cannot lose a target that
+                # is plainly in view.
+                matched_torso, owner = torsos[ti], by_id
+        if matched_torso is None and self._last_torso is not None:
+            matched_torso, owner = _match_by_position(
+                self._last_torso,
+                reference,
+                self.target_class,
+                animals,
+                torsos,
+                pairing,
+                self.torso_bridge_radius_multiplier,
+                self.torso_bridge_min_radius_px,
+            )
+        if owner is not None:
+            # The id is not the identity: whichever green bbox holds the matched
+            # torso is the target bbox now (same animal re-id'd by ByteTrack, or
+            # simply whoever is there). Species stays what the lock started with.
+            selected = owner
+            if owner.track_id is not None:
+                self.target_id = owner.track_id
+        # No torso anywhere: follow a bbox by its center instead (never to START
+        # a lock -- that needs a torso -- only to keep one). The locked id's own
+        # bbox if it is visible, else a green bbox of the same species near the
+        # previous tracking point. A torso, when there is one, always wins.
+        followed: Detection | None = None
+        if matched_torso is None:
+            if by_id is not None:
+                followed = by_id
+            elif self._last_torso is not None:
+                followed = _find_bbox_near(
+                    self._last_torso,
+                    reference,
+                    self.target_class,
+                    animals,
+                    self.torso_bridge_radius_multiplier,
+                    self.torso_bridge_min_radius_px,
+                )
+            if followed is not None:
+                selected = followed
+                if followed.track_id is not None:
+                    self.target_id = followed.track_id
+        # A different bbox id than the one the baseline was measured on may be
+        # a different animal: measure the baseline again.
+        if selected is not None and selected.track_id != self._monitored_id:
+            self._area_monitor = AreaMonitor(**self._area_kwargs)
+            self._monitored_id = selected.track_id
         area_cancel = (
             self._area_monitor.update(timestamp, selected, width, height)
             if observe
             else False
         )
-        matched_torso: Detection | None = None
-
-        if selected is None:
-            # Only bridge a true ByteTrack gap (target_id absent entirely this
-            # frame). If target_id reappears with a different class, that is
-            # an identity conflict, not a flicker — never paper over it with
-            # position.
-            id_conflicted = self.target_id is not None and any(
-                d.track_id == self.target_id for d in animals
-            )
-            # The locked individual's own bbox has been gone long enough
-            # that "same exact spot" is no longer a meaningful constraint --
-            # widen reidentify to the whole frame (still same species,
-            # still bbox-confirmed, biggest torso wins).
-            bbox_grace_expired = (
-                self._bbox_lost_since is not None
-                and timestamp - self._bbox_lost_since
-                >= self.bbox_retarget_grace_seconds
-            )
-            reidentified = (
-                _reidentify_by_torso(
-                    self._last_torso,
-                    self.target_class,
-                    self._excluded,
-                    animals,
-                    torsos,
-                    self.torso_bridge_radius_multiplier,
-                    unrestricted=bbox_grace_expired,
-                )
-                if not id_conflicted and (self._last_torso is not None or bbox_grace_expired)
-                else None
-            )
-            if reidentified is not None:
-                # Same individual, new ByteTrack ID — a fresh bbox directly
-                # matched a torso right where we last confirmed one. Adopt
-                # the new ID and continue as if never lost, instead of
-                # falling back to a torso-only position bridge.
-                selected, matched_torso = reidentified
-                self.target_id = selected.track_id
-                self.target_class = selected.class_id
-            elif self._last_torso is not None and not id_conflicted:
-                # 동물 bbox만 이번 프레임에 빠졌다(ByteTrack 순간 누락) — torso는
-                # 마지막 위치 근처에서 여전히 보이면 그 torso를 계속 따라간다.
-                # 동물 bbox가 없어 면적 기반 판정은 이번 프레임엔 평가하지 않는다
-                # (area_cancel은 이미 False).
-                matched_torso = _nearest_torso(
-                    self._last_torso[:2],
-                    self._last_torso[2] * self.torso_bridge_radius_multiplier,
-                    torsos,
-                )
-        else:
-            ai = next(i for i, animal in enumerate(animals) if animal is selected)
-            matches = torso_matches(animals, torsos)
-            ti = matches.get(ai)
-            if ti is not None:
-                matched_torso = torsos[ti]
-            elif self._last_torso is not None:
-                # The animal's bbox is tracked fine this frame, but its
-                # torso failed the strict bbox-containment match (occlusion,
-                # jitter, or fast motion nudging the torso center just
-                # outside the bbox edge for one frame) -- bridge with the
-                # same position-based fallback used for a full bbox gap,
-                # instead of treating one missed containment check as
-                # "torso missing" and flipping red -> yellow despite the
-                # lock itself being perfectly healthy.
-                matched_torso = _nearest_torso(
-                    self._last_torso[:2],
-                    self._last_torso[2] * self.torso_bridge_radius_multiplier,
-                    torsos,
-                )
-
-        # Tracks how long the locked individual's own bbox (not just its
-        # torso) has been absent -- feeds bbox_grace_expired above, next
-        # time. Resets on ANY bbox presence this frame, original track_id
-        # or reidentified.
-        if selected is None:
-            if self._bbox_lost_since is None:
-                self._bbox_lost_since = timestamp
-        else:
-            self._bbox_lost_since = None
 
         # Single lost-timer, driven purely by whether a torso was actually
         # matched this frame -- NOT by whether the animal bbox happened to
@@ -679,7 +657,7 @@ class EscapeTracker:
         # genuinely gone torso) no longer stalls forever in
         # STATE_TORSO_MISSING with no timeout; it releases on the same
         # track_lost_seconds clock as a full bbox gap.
-        if matched_torso is None:
+        if matched_torso is None and followed is None:
             if self._lost_since is None:
                 self._lost_since = timestamp
             elif timestamp - self._lost_since >= self.track_lost_seconds:
@@ -687,14 +665,13 @@ class EscapeTracker:
                 self.target_class = None
                 self._lost_since = None
                 self._last_torso = None
-                self._bbox_lost_since = None
+                self._monitored_id = None
+                self._reselect_at = timestamp + self.reselect_grace_seconds
                 return EscapeStep(None, None, STATE_LOST, True, "tracking_lost")
         else:
             self._lost_since = None
 
-        if matched_torso is None:
-            state = STATE_TORSO_MISSING
-        else:
+        if matched_torso is not None:
             # Torsos are detected class-agnostic (always TORSO_CLASS_ID,
             # track_id=None — see animal/inference.py) since they never enter
             # ByteTrack themselves. Once one is confirmed as THIS locked
@@ -713,6 +690,14 @@ class EscapeTracker:
             # 프레임 갱신 — 고정된 박스가 아니라 "마지막으로 본 torso 위치"가
             # 대상과 같이 움직이게 한다.
             self._last_torso = (*matched_torso.center, matched_torso.width)
+        elif followed is not None:
+            # The bbox center is the tracking point now (the next frame looks
+            # for the torso around it); keep the last torso width for the radius.
+            last_width = self._last_torso[2] if self._last_torso else followed.width
+            self._last_torso = (*followed.center, last_width)
+            state = STATE_TORSO_MISSING
+        else:
+            state = STATE_TORSO_MISSING
 
         if self._area_monitor.baseline is None:
             state = STATE_BASELINE
@@ -739,17 +724,14 @@ class EscapeTracker:
         ]
         if reasons:
             reason = "+".join(reasons)
-            self._excluded[self.target_id] = (
-                None  # 아직 화면에 보이는 중 — 재선정 금지 시작
-            )
             self._reselect_at = timestamp + self.reselect_grace_seconds
             self.target_id = None
             self.target_class = None
             self._last_torso = None
-            self._bbox_lost_since = None
+            self._monitored_id = None
             return EscapeStep(selected, matched_torso, STATE_EXIT, True, reason)
 
-        return EscapeStep(selected, matched_torso, state, False, "")
+        return EscapeStep(selected, matched_torso, state, False, "", followed)
 
     def reset_observation(self) -> None:
         """Discard samples collected while the camera was moving."""
@@ -763,6 +745,5 @@ class EscapeTracker:
         self.target_id = self.target_class = None
         self._lost_since = self._reselect_at = None
         self._last_torso = None
-        self._bbox_lost_since = None
-        self._excluded.clear()
+        self._monitored_id = None
         self.reset_observation()

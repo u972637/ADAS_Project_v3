@@ -58,48 +58,117 @@ class AimingTests(unittest.TestCase):
         offset = self.camera.aim(torso(600), (1000, 1000), 0.3)
         self.assertGreater(offset, 0.0)
 
-    def test_missing_frame_resends_last_point_and_keeps_averaging(self):
-        for t in (0, 0.1, 0.2):
-            self.camera.aim(torso(500), (1000, 1000), t)
-        before = list(self.motor.commands)
+    def test_first_orange_point_extrapolates_the_last_two_filtered_points(self):
+        # Filtered (3-frame average) points: 0.60, then avg(0.60, 0.62) = 0.61.
+        # First orange = last + (last - previous) = 0.62.
+        self.camera.aim(torso(600), (1000, 1000), 0)
+        self.camera.aim(torso(620), (1000, 1000), 0.1)
+        before = len(self.motor.commands)
         self.camera.missing()
-        # A held gap actively resends the last smoothed point -- the motor
-        # keeps a fresh command instead of going quiet.
-        self.assertEqual(len(self.motor.commands), len(before) + 1)
-        self.assertEqual(self.motor.commands[-1], before[-1])
-        # Averaging window was NOT cleared: a real detection resuming right
-        # where it left off doesn't need to refill from scratch.
-        self.assertAlmostEqual(self.camera.aim(torso(500), (1000, 1000), 2), 0.0)
+        self.assertEqual(len(self.motor.commands), before + 1)
+        x, y = self.motor.commands[-1]
+        self.assertAlmostEqual(x, 620)
+        self.assertAlmostEqual(y, 500)
+        self.assertEqual(self.camera.orange_point_px, (x, y))
+
+    def test_later_orange_points_decay_toward_the_screen_center(self):
+        from unittest.mock import patch
+
+        from animal import settings
+
+        self.camera.aim(torso(600), (1000, 1000), 0)
+        self.camera.aim(torso(620), (1000, 1000), 0.1)
+        with patch.object(settings, "ORANGE_DECAY_PER_FRAME", 0.5):
+            xs = []
+            for _ in range(3):
+                self.camera.missing()
+                xs.append(self.motor.commands[-1][0])
+        # 0.62, then pulled halfway to the CENTER (0.5, not the 0 corner): 0.56, 0.53.
+        self.assertAlmostEqual(xs[0], 620)
+        self.assertAlmostEqual(xs[1], 560)
+        self.assertAlmostEqual(xs[2], 530)
+        self.assertAlmostEqual(self.motor.commands[-1][1], 500)
+
+    def test_decay_works_on_both_axes_around_the_center(self):
+        from unittest.mock import patch
+
+        from animal import settings
+
+        self.camera.aim(torso(300, y=800), (1000, 1000), 0)  # lower left
+        with patch.object(settings, "ORANGE_DECAY_PER_FRAME", 0.5):
+            self.camera.missing()   # no velocity yet: stays at the last point
+            self.camera.missing()
+        x, y = self.motor.commands[-1]
+        self.assertAlmostEqual(x, 400)   # 500 + 0.5 * (300 - 500)
+        self.assertAlmostEqual(y, 650)   # 500 + 0.5 * (800 - 500)
+
+    def test_first_orange_point_is_clamped_inside_the_frame(self):
+        self.camera._last_point, self.camera._prev_point = (0.99, 0.01), (0.90, 0.10)
+        self.camera.missing()
+        x, y = self.motor.commands[-1]
+        self.assertAlmostEqual(x, 1000)   # 2*0.99 - 0.90 = 1.08 -> 1.0
+        self.assertAlmostEqual(y, 0)      # 2*0.01 - 0.10 = -0.08 -> 0.0
+
+    def test_a_single_known_point_has_no_velocity_to_extrapolate(self):
+        self.camera.aim(torso(700), (1000, 1000), 0)
+        self.camera.missing()
+        self.assertEqual(self.motor.commands[-1], (700, 500))
+
+    def test_real_torso_after_orange_restarts_the_filter(self):
+        for t in (0, 0.1, 0.2):
+            self.camera.aim(torso(600), (1000, 1000), t)
+        self.camera.missing()
+        self.camera.missing()
+        # Far jump (0.3 > the 0.15 outlier gate) that would have been rejected
+        # against the pre-loss samples -- accepted now, and not averaged in.
+        self.assertIsNone(self.camera.aim(torso(900), (1000, 1000), 1.0))
+        self.assertEqual(self.motor.commands[-1], (900, 500))
+        self.assertIsNone(self.camera.orange_point_px)
+        # The pre-loss point must not give a velocity across the gap.
+        self.camera.missing()
+        self.assertEqual(self.motor.commands[-1], (900, 500))
+
+    def test_switching_between_torso_and_bbox_restarts_the_filter(self):
+        for t in (0, 0.1, 0.2):
+            self.camera.aim(torso(600), (1000, 1000), t)
+        # The bbox center is a different kind of point, 0.3 away: without a
+        # restart it would be rejected by the 0.15 outlier gate / averaged in.
+        self.assertIsNone(self.camera.aim(torso(900), (1000, 1000), 0.3, source="bbox"))
+        self.assertEqual(self.motor.commands[-1], (900, 500))
+        # Filtering continues WITHIN the new source ...
+        self.camera.aim(torso(920), (1000, 1000), 0.4, source="bbox")
+        self.assertAlmostEqual(self.motor.commands[-1][0], 910)   # avg(900, 920)
+        # ... and a switch back restarts it again.
+        self.camera.aim(torso(600), (1000, 1000), 0.5, source="torso")
+        self.assertEqual(self.motor.commands[-1], (600, 500))
+
+    def test_no_velocity_is_taken_across_a_source_switch(self):
+        self.camera.aim(torso(600), (1000, 1000), 0)
+        self.camera.aim(torso(640), (1000, 1000), 0.1)            # moving right
+        self.camera.aim(torso(900), (1000, 1000), 0.2, source="bbox")
+        self.camera.missing()                                      # first orange
+        self.assertEqual(self.motor.commands[-1], (900, 500))      # no extrapolation
+
+    def test_no_velocity_is_taken_across_an_accepted_relocation(self):
+        for t, x in enumerate((600, 600, 600)):
+            self.camera.aim(torso(x), (1000, 1000), t * 0.1)
+        self.camera.aim(torso(900), (1000, 1000), 0.3)   # isolated jump: rejected
+        self.camera.aim(torso(905), (1000, 1000), 0.4)   # confirmed relocation
+        self.camera.missing()
+        self.assertEqual(self.motor.commands[-1], (905, 500))
+
+    def test_reset_clears_the_orange_state(self):
+        self.camera.aim(torso(600), (1000, 1000), 0)
+        self.camera.missing()
+        self.assertIsNotNone(self.camera.orange_point_px)
+        self.camera.reset()
+        self.assertIsNone(self.camera.orange_point_px)
+        before = len(self.motor.commands)
+        self.camera.missing()
+        self.assertEqual(len(self.motor.commands), before)
 
     def test_missing_frame_with_nothing_ever_aimed_is_a_plain_reset(self):
         self.camera.missing()
         self.assertEqual(self.motor.commands, [])
+        self.assertIsNone(self.camera.orange_point_px)
         self.assertIsNone(self.camera.aim(torso(500), (1000, 1000), 0))
-
-    def test_held_point_is_clamped_near_screen_center(self):
-        from animal import settings
-
-        limit = settings.HELD_AIM_MAX_OFFSET_FRACTION
-        for t in (0, 0.1, 0.2):
-            self.camera.aim(torso(900, y=100), (1000, 1000), t)
-        # The live aim itself was far off-center and sent unclamped.
-        self.assertAlmostEqual(self.motor.commands[-1][0], 900)
-        before = len(self.motor.commands)
-        self.camera.missing()
-        # ...but the resent hold is pulled to within `limit` of center per
-        # axis, and the orange-dot accessor reports exactly what was sent.
-        sent = self.motor.commands[-1]
-        self.assertEqual(len(self.motor.commands), before + 1)
-        self.assertAlmostEqual(sent[0], 1000 * (0.5 + limit))
-        self.assertAlmostEqual(sent[1], 1000 * (0.5 - limit))
-        self.assertEqual(self.camera.held_aim_point_px, sent)
-
-    def test_held_aim_point_px_tracks_last_sent_point(self):
-        self.assertIsNone(self.camera.held_aim_point_px)
-        for t in (0, 0.1, 0.2):
-            self.camera.aim(torso(500), (1000, 1000), t)
-        self.assertEqual(self.camera.held_aim_point_px, (500, 500))
-        self.camera.missing()  # Held point survives a missing frame.
-        self.assertEqual(self.camera.held_aim_point_px, (500, 500))
-        self.camera.reset()
-        self.assertIsNone(self.camera.held_aim_point_px)

@@ -57,6 +57,11 @@ class WildlifeDeterrent:
         self.escape_tracker = escape_tracker
         self.torso_class_id, self.torso_confidence = torso_class_id, torso_confidence
         self.min_selection_confidence = settings.MIN_SELECTION_CONFIDENCE
+        self.green_forget_seconds = settings.GREEN_ID_FORGET_SECONDS
+        # track_id -> last time it was seen while green. A bbox is "green" when
+        # its confidence reaches min_selection_confidence, and its id then stays
+        # green at any confidence until unseen for green_forget_seconds.
+        self._green_ids: dict[int, float] = {}
         self.tracker_config = settings.TRACKER_CONFIG
         self.phase = Phase.SEARCH
         self.last_escape_step = None
@@ -114,7 +119,7 @@ class WildlifeDeterrent:
             player=player,
             camera=camera,
             escape_tracker=EscapeTracker(
-                track_lost_seconds=settings.TRACK_LOST_SECONDS,
+                track_lost_seconds=settings.ORANGE_TIMEOUT_SECONDS,
                 reselect_grace_seconds=settings.RESELECT_GRACE_SECONDS,
                 area_baseline_seconds=settings.AREA_BASELINE_SECONDS,
                 area_smooth_seconds=settings.AREA_SMOOTH_SECONDS,
@@ -125,7 +130,7 @@ class WildlifeDeterrent:
                 edge_margin_px=settings.EDGE_MARGIN_PX,
                 min_bbox_height_px=settings.MIN_BBOX_HEIGHT_PX,
                 torso_bridge_radius_multiplier=settings.TORSO_BRIDGE_RADIUS_MULTIPLIER,
-                bbox_retarget_grace_seconds=settings.BBOX_RETARGET_GRACE_SECONDS,
+                torso_bridge_min_radius_px=settings.TORSO_BRIDGE_MIN_RADIUS_PX,
             ),
             torso_class_id=(
                 settings.TORSO_CLASS_ID if torso_class_id is None else torso_class_id
@@ -146,6 +151,24 @@ class WildlifeDeterrent:
     def playing(self):
         with self._lock:
             return self._playing
+
+    def is_green(self, detection):
+        """Animal bbox eligible for lock-on / following: confident enough now,
+        or an id that was confident earlier and has not been forgotten."""
+        if detection.confidence >= self.min_selection_confidence:
+            return True
+        with self._lock:
+            return detection.track_id is not None and detection.track_id in self._green_ids
+
+    def _update_green_ids(self, detections, at):
+        # Forget first: an id that was unseen for green_forget_seconds must not
+        # be revived just because it shows up again at low confidence.
+        for track_id, seen_at in list(self._green_ids.items()):
+            if at - seen_at >= self.green_forget_seconds:
+                del self._green_ids[track_id]
+        for d in detections:
+            if d.class_id in self.class_map and d.track_id is not None and self.is_green(d):
+                self._green_ids[d.track_id] = at
 
     def _event(self, reason, target=None, file=None):
         label = self.class_map.get(target.class_id) if target else None
@@ -301,6 +324,10 @@ class WildlifeDeterrent:
             now = captured_at if now is None else now
             if generation is not None and generation != self._generation:
                 return self.last_event
+            # Green status follows the camera even while paused/stopped, so the
+            # on-screen green/gray boxes stay right before W starts anything.
+            if now - captured_at <= settings.MAX_RESULT_AGE_SECONDS:
+                self._update_green_ids(detections, captured_at)
             if self.phase in (Phase.STOPPED, Phase.FAULT):
                 return self.last_event
             if now - captured_at > settings.MAX_RESULT_AGE_SECONDS:
@@ -319,8 +346,7 @@ class WildlifeDeterrent:
         animals = [
             d
             for d in detections
-            if d.class_id in self.class_map
-            and d.confidence >= self.min_selection_confidence
+            if d.class_id in self.class_map and self.is_green(d)
         ]
         torsos = [
             d
@@ -328,12 +354,21 @@ class WildlifeDeterrent:
             if d.class_id == self.torso_class_id
             and d.confidence >= self.torso_confidence
         ]
+        # While orange the tracked torso is expected near the virtual target the
+        # motor is chasing, not where the torso last was (the camera has moved).
+        orange = getattr(self.camera, "orange_point", None) if self.camera else None
+        reference = (
+            (orange[0] * frame_size[0], orange[1] * frame_size[1])
+            if orange is not None
+            else None
+        )
         step = self.escape_tracker.step(
             captured_at,
             animals,
             torsos,
             *frame_size,
             observe=True,  # always evaluate; the motor never freezes anymore
+            reference=reference,
         )
         self.last_escape_step = step
         # Termination is authoritative; never fall through to aim or audio on this frame.
@@ -351,6 +386,7 @@ class WildlifeDeterrent:
             return self._event(step.termination_reason, step.selected)
         target = step.selected
         if target is None and step.matched_torso is None:
+            # (no torso and no bbox to follow either)
             if self.camera:
                 self.camera.missing()
             return self._event(
@@ -365,11 +401,17 @@ class WildlifeDeterrent:
             self.phase = Phase.TRACKING
         if self.camera is None:
             return self._event("motor_disabled", target)
-        if step.matched_torso is None:
+        if step.matched_torso is None and step.followed_bbox is None:
             self.camera.missing()
             return self._event("torso_missing_hold", target)
-        # Motor keeps tracking every frame regardless of playback state.
-        offset = self.camera.aim(step.matched_torso, frame_size, captured_at)
+        # Motor keeps tracking every frame regardless of playback state. With no
+        # torso it follows the CENTER of the bbox instead (3-frame filtered).
+        if step.matched_torso is not None:
+            offset = self.camera.aim(step.matched_torso, frame_size, captured_at)
+        else:
+            offset = self.camera.aim(
+                step.followed_bbox, frame_size, captured_at, source="bbox"
+            )
         if self._playing:
             # Only evaluate the exit band while the animal bbox is actually
             # live (target is not None) — during a fallback bridge (bbox

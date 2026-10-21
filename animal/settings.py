@@ -1,108 +1,206 @@
-"""Runtime configuration. Rig coordinates/gains live in motor/config.py."""
+"""Runtime configuration. Rig coordinates/gains live in motor/config.py.
+
+이 파일은 야생동물 퇴치 시스템(메뉴 1)의 실행 설정이다. 모터 좌표·게인은
+motor/config.py 에 따로 있다. 아래 주석은 각 상수가 무엇이고, 값을 바꾸면
+무엇이 달라지는지를 적은 것이다.
+"""
 
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# ---------------------------------------------------------------------------
+# 모델 / 추론
+# ---------------------------------------------------------------------------
+# YOLO 가중치 파일 경로. 동물(멧돼지·고라니)과 torso 클래스를 함께 검출한다.
 MODEL_PATH = PROJECT_ROOT / "assets/models/weights.pt"
-# None = use the model's own training imgsz (currently 1088, baked into
-# weights.pt). Raising this (e.g. 1280/1600, must stay a multiple of the
-# model stride, 32) trades inference latency for more pixels on small/far
-# detections; whether it actually helps is empirical, not guessed here --
-# change it and compare, don't assume bigger is better.
-INFERENCE_IMGSZ = 1088 # (32의 배수: …1088, 1152, 1216, 1280, 1344…)
+# 추론 입력 해상도(px). None = 모델이 학습된 크기(현재 1088)를 그대로 사용.
+# 키우면(1280/1600 등, 모델 stride 32의 배수여야 함) 작고 먼 대상에 픽셀을 더
+# 주지만 추론 지연이 늘어난다. 실제로 도움이 되는지는 실측으로만 알 수 있으니
+# 바꿔 보고 비교할 것 (크다고 항상 좋지 않다).
+INFERENCE_IMGSZ = 1088  # (32의 배수: …1088, 1152, 1216, 1280, 1344…)
+
+# ---------------------------------------------------------------------------
+# 로그
+# ---------------------------------------------------------------------------
+# 로그 파일을 모아 두는 폴더.
 LOG_DIR = PROJECT_ROOT / "log"
-# Menu 1/2 'u' key: append the current red-dot torso's pixel width/height here.
+# 메뉴 1/2 에서 U 키를 누르면, 그 순간 빨간점이 찍힌 torso 의 가로·세로·면적
+# (카메라 프레임 픽셀)을 이 CSV 에 한 줄 추가한다. 거리별 크기 보정용.
 TORSO_SIZE_LOG_PATH = LOG_DIR / "torso_size.csv"
-# Camera = /dev/video<CAMERA_INDEX>. The number is assigned in USB enumeration
-# order, so it moves when the camera is replugged or another camera (the
-# laptop's built-in webcam exposes /dev/video2..5) enumerates first -- it was
-# 0 at times and 4 at others. If the picture is black or the wrong camera, run
-#   ls -l /dev/v4l/by-id/        (the Arducam "-video-index0" -> ../../videoN)
-# and set CAMERA_INDEX to that N.
+
+# ---------------------------------------------------------------------------
+# 카메라 장치
+# ---------------------------------------------------------------------------
+# 카메라 = /dev/video<CAMERA_INDEX>. 이 번호는 USB 인식 순서로 매겨져서, 카메라를
+# 다시 꽂거나 노트북 내장 웹캠(/dev/video2..5)이 먼저 잡히면 바뀐다 (0이었다가
+# 4였다가 함). 화면이 까맣거나 엉뚱한 카메라가 나오면
+#   ls -l /dev/v4l/by-id/        (Arducam 의 "-video-index0" -> ../../videoN)
+# 으로 N 을 확인해 CAMERA_INDEX 를 그 값으로 맞춘다.
 CAMERA_INDEX = 4
-# Optional: a /dev/v4l/by-id/...-video-index0 path (never "-video-index1", the
-# metadata node) pins the camera independent of its number. Overrides
-# CAMERA_INDEX when set; None = use CAMERA_INDEX.
+# 선택 사항: /dev/v4l/by-id/...-video-index0 경로(메타데이터 노드인
+# "-video-index1" 은 안 됨)를 지정하면 번호와 무관하게 그 카메라로 고정된다.
+# 지정하면 CAMERA_INDEX 보다 우선하고, None 이면 CAMERA_INDEX 를 쓴다.
 CAMERA_DEVICE = None
-ENABLE_MOTOR = True  # Production main.py runs detection, control and audio together.
-START_PAUSED = False  # main.py --start-paused enables W/resume gating when needed.
+
+# ---------------------------------------------------------------------------
+# 실행 모드
+# ---------------------------------------------------------------------------
+# True: 모터를 실제로 구동한다 (main.py 는 검출·제어·음원을 한 번에 돌린다).
+# False: 모터 없이 검출/화면/음원만.
+ENABLE_MOTOR = True
+# True: 시작 시 정지 상태로 대기하다가 W 키(재개)를 눌러야 동작한다.
+# main.py --start-paused 로도 켤 수 있다.
+START_PAUSED = False
+# True: 모터 CAN 통신 없이 가상 모터(SimulatedCameraController)를 쓰고, 소리도
+# 실제로 재생하지 않는(DryRunPlayer) 시험 모드. 카메라 영상은 그대로 필요하다.
 DRY_RUN = False
-# False: Tracker's 500 Hz control thread shares this process (original).
-# True: the control loop runs in a separate OS process (motor/ipc_tracker.py),
-# immune to this process's own GIL load. Flip here to switch, no env var needed.
+# False: Tracker 의 500 Hz 제어 스레드가 이 프로세스 안에서 돈다(기존 방식).
+# True: 제어 루프를 별도 OS 프로세스(motor/ipc_tracker.py)에서 돌려, 이 프로세스의
+# GIL 부하에 영향받지 않게 한다. 환경변수 없이 여기서 바꾸면 된다.
 MOTOR_PROCESS = True
+# True: 화면 창(cv2.imshow)과 키 입력 없이 실행.
 HEADLESS = False
+# 경계음을 재생하는 외부 프로그램 이름. None = 자동 선택(macOS 는 afplay, 그 외 aplay).
 AUDIO_PLAYER_COMMAND = None
-# Escape/lost termination while tracking: return to the shared default pose
-# (motor/config.py DEFAULT_YAW_DEG/DEFAULT_PITCH_DEG) but much slower than a
-# normal stop, so the animal isn't startled by a fast motion right after it
-# was detected backing away or lost.
+
+# ---------------------------------------------------------------------------
+# 종료 시 자세 복귀
+# ---------------------------------------------------------------------------
+# 도망·유실로 추적이 끝났을 때 기본 자세(motor/config.py 의 DEFAULT_YAW_DEG /
+# DEFAULT_PITCH_DEG)로 돌아가는 시간(초). 일반 정지보다 훨씬 느리게 해서,
+# 방금 물러나거나 놓친 동물이 갑작스러운 움직임에 놀라지 않게 한다.
 TERMINATION_RETURN_SECONDS = 8.0
-# Program exit (q/quit) returns here instead of the shared default pose.
+# 프로그램 종료(Q)할 때는 기본 자세 대신 이 자세로 돌아간다 (도, yaw / pitch).
 QUIT_YAW_DEG = 0.0
 QUIT_PITCH_DEG = -4.0
 
+# ---------------------------------------------------------------------------
+# 클래스 / 검출 임계값
+# ---------------------------------------------------------------------------
+# 모델 클래스 id -> 재생할 음원 라벨. 여기 없는 클래스는 동물로 취급하지 않는다.
 CLASS_TO_AUDIO = {0: "boar", 1: "water_deer"}
+# 모델 파일이 실제로 가진 클래스 이름. 시작 시 일치하는지 검사해 잘못된 모델
+# 로드를 막는다.
 EXPECTED_MODEL_NAMES = {0: "boar", 1: "deer"}
+# torso(몸통) 클래스의 id 와 이름. 모터가 조준하는 점은 이 박스의 중심이다.
 TORSO_CLASS_ID = 2
 TORSO_CLASS_NAME = "torso"
+# 동물 bbox 가 "초록"(락 시작·추적 대상이 될 수 있음)이 되는 최소 신뢰도.
+# 이 값에 한 번도 못 미친 bbox 는 회색으로 보이기만 하고 락 대상이 되지 못한다.
 MIN_SELECTION_CONFIDENCE = 0.6
-TORSO_TRACK_CONFIDENCE = 0.2  # Raw detection threshold; torsos do NOT enter ByteTrack.
+# 한 번 초록이 된 track id 는 이후 신뢰도가 얼마로 떨어져도 초록을 유지한다.
+# 단, 이 시간(초) 동안 화면에서 안 보이면 초록 기억을 잊고, 다시 보이면
+# MIN_SELECTION_CONFIDENCE 를 또 넘어야 초록이 된다.
+GREEN_ID_FORGET_SECONDS = 5.0
+# torso 의 원시 검출 하한(YOLO predict conf 로 쓰임). torso 는 ByteTrack 에 넣지
+# 않고 프레임마다 새로 검출한다. 모델이 0.2 미만은 내지 않는다.
+TORSO_TRACK_CONFIDENCE = 0.2
+# 동물 추적기(ByteTrack) 설정 파일. 종별로 따로 돌아 id 를 안정화한다.
 TRACKER_CONFIG = "bytetrack.yaml"
-TRACK_LOST_SECONDS = 3.0
-# Once the locked individual's own bbox (not just its torso) has been
-# missing this long, ID-switch reidentify stops requiring the candidate to
-# be near the last torso position -- it searches the whole frame for any
-# same-species, bbox-confirmed torso, biggest wins. Below this, reidentify
-# stays close to the last known spot (quick same-individual recovery).
-BBOX_RETARGET_GRACE_SECONDS = 2.0
-# While no torso is matched (orange dot), the held aim point resent to the
-# motor is clamped to within this fraction of screen center, per axis.
-# The motor has already been steering that point toward center, and every
-# update() is relative to the motor's CURRENT position, so resending a stale
-# off-center pixel offset would keep pushing it further each tick.
-HELD_AIM_MAX_OFFSET_FRACTION = 0.05
-RESELECT_GRACE_SECONDS = 1.0
+
+# ---------------------------------------------------------------------------
+# 주황 상태 (추적 대상은 살아 있는데 torso·bbox 둘 다 못 찾는 상태)
+# ---------------------------------------------------------------------------
+# 주황 상태에서는 모터가 "가상 목표점"을 쫓는다. 이 시간(초) 안에 torso 도 bbox 도
+# 다시 못 찾으면 도망간 것으로 판정하고, 락을 풀고 탐색 상태로 돌아간다.
+# (bbox 만 계속 보이는 동안은 주황이 아니므로 이 타이머가 돌지 않는다.)
+ORANGE_TIMEOUT_SECONDS = 2.0
+# 주황 가상 목표점의 이동 규칙.
+#  - 첫 주황점: 필터된(3프레임 평균) 최근 두 점을 한 걸음 외삽
+#    (마지막 + (마지막 - 직전)), 화면 안으로 제한.
+#  - 이후 주황점: 처리된 카메라 프레임마다 "화면 중앙"으로 이 비율만큼 당겨짐
+#      P_k = C + (1 - n) * (P_(k-1) - C),   C = (W/2, H/2)  (원점 (0,0) 아님)
+# 모터가 직전 목표를 향해 이미 움직였으니 목표가 이제 중앙에 더 가깝게 보일
+# 것이라는 근사다. 0.5 = 프레임마다 중앙과의 차이가 절반으로 줄어듦.
+# 0 에 가까울수록 외삽점에 오래 머물고, 1 이면 바로 화면 중앙.
+ORANGE_DECAY_PER_FRAME = 0.5
+# 도망 판정(bbox 축소 / 너무 작음 / 주황 지속) 직후, 이 시간(초) 동안은 어떤
+# 동물도 새로 락하지 않는다 (id 와 무관한 전체 금지). 지난 뒤에는 같은 동물도
+# 다시 잡을 수 있다. 새 락의 첫 모터 명령이 느린 복귀 동작을 끊는다.
+RESELECT_GRACE_SECONDS = 5.0
+
+# ---------------------------------------------------------------------------
+# 감시 타임아웃
+# ---------------------------------------------------------------------------
+# 카메라에서 새 프레임이 이 시간(초) 넘게 안 오면 추적을 풀고 소리를 끈다.
 CAMERA_TIMEOUT_SECONDS = 5.0
+# 추론 결과가 이 시간(초) 넘게 안 나오면(추론 멈춤) 추적을 풀고 소리를 끈다.
 PERCEPTION_TIMEOUT_SECONDS = 2.0
+# 프레임을 찍은 시각 대비 결과가 이 시간(초)보다 늦게 도착하면 오래된 결과로
+# 보고 조준·재생에 쓰지 않는다.
 MAX_RESULT_AGE_SECONDS = 1.0
 
-# Exit heuristic: bbox area/height shrinking relative to a collected baseline.
-DISTANCE_METRIC = "and"  # area AND height; alternatives: "area", "height"
+# ---------------------------------------------------------------------------
+# 도망(이탈) 판정: 대상 bbox 가 기준보다 작아짐
+# ---------------------------------------------------------------------------
+# 어떤 크기 지표로 줄어듦을 볼지. "and" = 면적 AND 높이 둘 다 기준 이하일 때,
+# 그 외 선택지: "area"(면적만), "height"(높이만).
+DISTANCE_METRIC = "and"
+# 면적이 기준(baseline) 대비 이 비율 이하이면 줄어든 것으로 본다 (0.5 = 절반).
 AREA_RATIO_THRESHOLD = 0.50
+# 높이가 기준 대비 이 비율 이하이면 줄어든 것으로 본다 (0.8 = 80%).
 HEIGHT_RATIO_THRESHOLD = 0.80
+# 락 직후(또는 대상 bbox id 가 바뀐 직후) 이 시간(초) 동안의 유효 프레임으로
+# 기준 크기를 잰다. 이 동안에는 도망 판정이 꺼져 있다.
 AREA_BASELINE_SECONDS = 0.4
+# 현재 크기를 이 시간(초) 구간의 중앙값으로 매끄럽게 해서 비교한다 (순간 흔들림 제거).
 AREA_SMOOTH_SECONDS = 0.35
+# 축소 상태가 이 시간(초) 연속 유지돼야 도망으로 확정한다.
 AREA_HOLD_SECONDS = 0.5
+# bbox 가 화면 가장자리에서 이 픽셀 이내면 잘려 보이는 것으로 간주해 크기 비교에
+# 쓰지 않는다 (화면 밖으로 나가며 줄어드는 것을 도망으로 오판하지 않기 위함).
 EDGE_MARGIN_PX = 2
-# Absolute floor on the animal bbox's pixel height, independent of the
-# baseline-ratio check above: too far away to track reliably regardless of
-# how large it started out. 0 disables this check.
+# bbox 높이의 절대 하한(px). 기준 대비 비율과 무관하게, 이보다 작으면 너무 멀어
+# 신뢰할 수 없다고 보고 추적을 끝낸다. 0 이면 이 검사를 끈다.
 MIN_BBOX_HEIGHT_PX = 20.0
-# Position-based torso bridge (bbox-gap fallback / ByteTrack ID-switch
-# reidentify) searches within this many torso-WIDTHS of the last confirmed
-# torso position. 1.0 only tolerates near-zero movement during the gap; a
-# real animal can easily drift more than its own body-width during even a
-# short (sub-second) detection gap, which otherwise leaves it stuck
-# unmatched (yellow, never red) once it reappears until the full
-# TRACK_LOST_SECONDS timeout releases and re-selects from scratch.
+
+# ---------------------------------------------------------------------------
+# torso 재매칭 (끊긴 뒤, 또는 락된 bbox 안에 torso 가 없을 때)
+# ---------------------------------------------------------------------------
+# 같은 id 의 bbox 안에 torso 가 있으면 거리와 무관하게 그것을 쓴다. 그렇지 않을
+# 때는 "위치"로 다시 찾는다: 직전 추적점을 중심으로 한 원 안에서 가장 가까운
+# torso. 원 반경(px) =
+#     max(TORSO_BRIDGE_MIN_RADIUS_PX, TORSO_BRIDGE_RADIUS_MULTIPLIER * 마지막 torso 너비)
+# 원의 중심은 빨간점일 땐 마지막 torso 중심, 주황일 땐 현재 주황점(모터가 마지막으로
+# 보낸 곳 근처에 대상이 있을 것이라는 가정)이다. 이 기준점 선택은 첫 추정이라
+# 실기에서 조정이 필요하다. 다른 종의 초록 bbox 안에 든 torso 는 건너뛰고,
+# bbox 가 없는 torso 는 받아들인다. 같은 방식으로 따라갈 bbox 도 이 원 안에서
+# (bbox 사각형까지의 거리로) 고른다.
+# 너비 배수: 클수록 대상이 빨리 움직여도 다시 찾지만 다른 개체를 잡을 위험도 커진다.
 TORSO_BRIDGE_RADIUS_MULTIPLIER = 1.8
+# 반경 하한(px): 작고 먼 torso 는 너비 기반 반경이 너무 작아, 몇 프레임 사이의
+# 대상·카메라 이동량을 못 따라간다. 그걸 막는 고정 바닥값.
+TORSO_BRIDGE_MIN_RADIUS_PX = 250.0
 
+# ---------------------------------------------------------------------------
+# 조준 필터 (animal/aiming.py)
+# ---------------------------------------------------------------------------
+# 모터로 보내는 목표 = 최근 이 개수 프레임 조준점의 평균 (떨림 완화).
 AIM_AVERAGE_FRAMES = 3
+# 원시 조준점이 화면 중앙에서 이 비율(화면 크기 대비) 이내면 그 축은 정확히
+# 중앙(0.5)으로 본다. 오래된 평균이 남아 중앙 맞춘 뒤에도 끌려가는 것을 막는다.
 AIM_DEADBAND_FRACTION = 0.003
-AIM_MAX_JUMP_FRACTION = 0.15  # normalized image distance; isolated jumps rejected
+# 직전 샘플과 정규화 거리가 이 값(화면 대비)보다 튀면 이상치로 거른다.
+# 비슷한 위치로 연속 두 번 튀면 진짜 이동으로 받아들인다.
+AIM_MAX_JUMP_FRACTION = 0.15
 
-# Playback starts once the aimed (matched_torso) point is within
-# PLAYBACK_ENTER_FRACTION of screen center -- evaluated purely on the red-dot
-# (motor-signal) aim point, independent of whether the animal bbox itself
-# (`target`) is live this frame. Once playing, it keeps going (motor keeps
-# tracking regardless) until the aim point drifts past PLAYBACK_EXIT_FRACTION,
-# and only while the animal bbox is actually live (see wildlife.py).
+# ---------------------------------------------------------------------------
+# 경계음 재생 조건
+# ---------------------------------------------------------------------------
+# 조준점(빨간점 = 모터 신호)이 화면 중앙에서 이 비율 안으로 들어오면 재생을
+# 시작한다. 동물 bbox 가 이번 프레임에 보이는지와는 무관하다.
 PLAYBACK_ENTER_FRACTION = 0.05
+# 이미 재생 중일 때, 동물 bbox 가 실제로 보이는 상태에서 조준점이 이 비율을 넘어
+# 벗어나면 재생을 멈춘다. (시작 5% / 종료 15%의 히스테리시스로 경계에서
+# 켜졌다 꺼졌다 하는 것을 막는다. 모터는 재생 여부와 무관하게 계속 추적한다.)
 PLAYBACK_EXIT_FRACTION = 0.15
-PLAYBACK_GAP_SECONDS = 0.3  # Silence between consecutive clips while playing.
+# 연속 재생에서 클립 사이의 무음 간격(초).
+PLAYBACK_GAP_SECONDS = 0.3
 
-# Only the pitch_eq variant is kept on disk; the old single-stage "threat"
-# clips (assets/audio*) and the other warning variants (original/eq/pitch)
-# were removed since nothing in the running code referenced them anymore.
+# ---------------------------------------------------------------------------
+# 음원
+# ---------------------------------------------------------------------------
+# 경계음 폴더. pitch_eq 변형만 디스크에 남겨 두었다 (예전 단일 단계 "threat" 음원과
+# 다른 변형 original/eq/pitch 는 코드에서 더 이상 쓰지 않아 지웠다).
 WARNING_AUDIO_DIR = PROJECT_ROOT / "assets/warnings_pitch_eq"

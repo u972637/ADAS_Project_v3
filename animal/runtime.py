@@ -122,6 +122,7 @@ def run_session(
         open_camera,
     )
     from animal.aiming import TrackerCameraController, SimulatedCameraController
+    from animal.eventlog import EventLogger
     from motor.config import FRAME_W, FRAME_H
 
     logging.basicConfig(
@@ -187,7 +188,7 @@ def run_session(
             f"warning_assets={settings.WARNING_AUDIO_DIR}"
         )
         last_sequence = 0
-        last_report = None
+        event_log = EventLogger()
         last_loop_at = time.monotonic()
         prev_ready = None
         try:
@@ -254,15 +255,12 @@ def run_session(
 
                         for detection in detections:
                             is_torso = detection.class_id == service.torso_class_id
-                            # Animals under MIN_SELECTION_CONFIDENCE are
-                            # still detected and tracked (they get an ID) but
-                            # can never be locked onto -- draw them gray so
-                            # the threshold is visible instead of looking
-                            # ignored.
-                            eligible = (
-                                is_torso
-                                or detection.confidence >= service.min_selection_confidence
-                            )
+                            # Green = eligible to lock onto: confidence reached
+                            # MIN_SELECTION_CONFIDENCE, or this id already did
+                            # and has not been forgotten (service.is_green).
+                            # Gray = detected and tracked (it has an id) but
+                            # never confident enough yet.
+                            eligible = is_torso or service.is_green(detection)
                             color = (
                                 (0, 180, 255)
                                 if is_torso
@@ -300,21 +298,26 @@ def run_session(
                                 # sound happens to be playing right now.
                                 center = scaled_point(selected.matched_torso.center)
                                 cv2.circle(display, center, 8, (0, 0, 255), -1)
+                            elif selected.followed_bbox is not None:
+                                # No torso: the bbox CENTER is the tracking point
+                                # (the motor follows its 3-frame average).
+                                center = scaled_point(selected.followed_bbox.center)
+                                cv2.circle(display, center, 8, (0, 0, 255), -1)
                             elif service.camera is not None and not any(
                                 d.class_id == service.torso_class_id
                                 for d in detections
                             ):
-                                # Orange = NO torso in view at all this frame
-                                # (no yellow dot either), but the lock is
-                                # still alive (not yet released) and the
-                                # motor keeps resending its last aimed point
-                                # (animal/aiming.py missing()) -- a held
-                                # motor target with no torso. A visible
-                                # torso that simply isn't matched to the lock
-                                # shows as yellow only, never orange.
-                                held = service.camera.held_aim_point_px
-                                if held is not None:
-                                    center = scaled_point(held)
+                                # Orange = the tracked torso is gone but the
+                                # lock is still alive: the motor is chasing
+                                # the virtual target (animal/aiming.py
+                                # missing(): extrapolated, then pulled to
+                                # center each frame). Drawn only when no
+                                # torso at all is in view; a visible torso
+                                # that just isn't matched to the lock shows
+                                # as yellow only.
+                                orange = service.camera.orange_point_px
+                                if orange is not None:
+                                    center = scaled_point(orange)
                                     cv2.circle(display, center, 8, (0, 165, 255), -1)
                         cv2.drawMarker(
                             display,
@@ -363,14 +366,7 @@ def run_session(
                         cv2.imshow("Wildlife Deterrent", display)
                 else:
                     time.sleep(0.01)
-                report = (
-                    service.phase.value,
-                    service.last_event.reason,
-                    service.last_error,
-                )
-                if report != last_report:
-                    logger.info("state=%s event=%s error=%s", *report)
-                    last_report = report
+                event_log.observe(service, time.monotonic())
                 # Poll even when the camera has no frame. Terminal stop also works during inference.
                 if not headless:
                     key = cv2.waitKey(1) & 0xFF

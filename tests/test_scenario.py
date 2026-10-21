@@ -47,7 +47,7 @@ class Camera:
         self.offset = 0.0
         self.ok = True
 
-    def aim(self, target, size, timestamp):
+    def aim(self, target, size, timestamp, source="torso"):
         self.aims.append((target, timestamp))
         return self.offset
 
@@ -192,16 +192,19 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(s.player.state.state, "stopped")
         self.assertEqual(s.phase, Phase.SEARCH)
         feed(s, 2.6, detections(track_id=5))
+        self.assertEqual(s.phase, Phase.SEARCH)    # still inside the re-lock ban (1 s here)
+        feed(s, 3.6, detections(track_id=5))       # ban over: any animal may be locked again
         self.assertEqual(s.phase, Phase.TRACKING)
         self.assertTrue(s.playing)
 
-    def test_torso_missing_has_no_animal_center_fallback(self):
+    def test_no_lock_and_no_aim_without_a_matched_torso(self):
         s = make_service()
         event = None
         for i in range(6):
             event = feed(s, i * 0.1, detections(torso=False))
         self.assertEqual(s.camera.aims, [])
-        self.assertEqual(event.reason, "torso_missing_hold")
+        self.assertEqual(event.reason, "search")
+        self.assertIsNone(s.escape_tracker.target_id)
         self.assertEqual(s.player.requests, [])
 
     def test_stop_latches_until_resume_and_rejects_inflight_results(self):
