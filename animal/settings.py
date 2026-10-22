@@ -126,13 +126,13 @@ ORANGE_TIMEOUT_SECONDS = 3.0
 # 바깥 구역 경계: 중앙에서 화면 경계까지 거리의 이 비율 이상이면 바깥 구역.
 ORANGE_ZONE_OUTER_FRACTION = 0.7
 # 안쪽 구역 경계: 중앙에서 이 비율 미만이면 안쪽 구역 (OUTER 보다 작아야 한다).
-ORANGE_ZONE_INNER_FRACTION = 0.4
+ORANGE_ZONE_INNER_FRACTION = 0.3
 # 바깥 구역에서의 프레임당 당김 비율 n (화면 가장자리 쪽에 있을 때).
 ORANGE_DECAY_OUTER = 0.8
 # 중간 구역에서의 프레임당 당김 비율 n.
 ORANGE_DECAY_MIDDLE = 0.5
 # 안쪽 구역에서의 프레임당 당김 비율 n (이미 중앙 근처일 때).
-ORANGE_DECAY_INNER = 0.0
+ORANGE_DECAY_INNER = 0.01
 # 도망 판정(bbox 축소 / 너무 작음 / 주황 지속) 직후, 이 시간(초) 동안은 어떤
 # 동물도 새로 락하지 않는다 (id 와 무관한 전체 금지). 지난 뒤에는 같은 동물도
 # 다시 잡을 수 있다. 새 락의 첫 모터 명령이 느린 복귀 동작을 끊는다.

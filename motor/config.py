@@ -12,7 +12,7 @@ import math
 #   "step"       -> motor/dm4310_tracker_step.py:StepTracker (pre-trajectory
 #                   design: stepped position goal + dq=0, smoothing left to
 #                   the PD loop; linear ramp only for go_to/default return)
-CONTROL_MODE = "step"
+CONTROL_MODE = "trajectory"
 AXES = ("yaw", "pitch")
 DEVICENAME = "/dev/ttyACM0"
 BAUDRATE = 921600
@@ -58,7 +58,7 @@ TRAJECTORY_GO_CENTER_DURATION = 2.0  # Minimum return duration; limits may exten
 # ── "step" mode (motor/dm4310_tracker_step.py) ───────────────────────────
 STEP_KP = {"yaw": 45.0, "pitch": 40.0}
 STEP_KD = {"yaw": 4.0, "pitch": 2.5}
-STEP_MAX_STEP_RAD = 0.6
+STEP_MAX_STEP_RAD = 0.4
 STEP_GO_CENTER_DURATION = 3.0  # Linear ramp duration for go_to/go_default.
 
 
