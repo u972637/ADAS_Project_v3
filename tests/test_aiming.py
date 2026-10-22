@@ -1,4 +1,7 @@
 import unittest
+from unittest.mock import patch
+
+from animal import settings
 from animal.aiming import TrackerCameraController
 from animal.perception import Detection
 
@@ -23,6 +26,16 @@ class Motor:
 
 def torso(x, y=500):
     return Detection(2, 0.9, (x - 20, y - 20, x + 20, y + 20))
+
+
+def uniform_decay(n):
+    """Same pull n in all three orange zones (zone-independent tests)."""
+    return patch.multiple(
+        settings,
+        ORANGE_DECAY_OUTER=n,
+        ORANGE_DECAY_MIDDLE=n,
+        ORANGE_DECAY_INNER=n,
+    )
 
 
 class AimingTests(unittest.TestCase):
@@ -78,7 +91,7 @@ class AimingTests(unittest.TestCase):
 
         self.camera.aim(torso(600), (1000, 1000), 0)
         self.camera.aim(torso(620), (1000, 1000), 0.1)
-        with patch.object(settings, "ORANGE_DECAY_PER_FRAME", 0.5):
+        with uniform_decay(0.5):
             xs = []
             for _ in range(3):
                 self.camera.missing()
@@ -89,13 +102,55 @@ class AimingTests(unittest.TestCase):
         self.assertAlmostEqual(xs[2], 530)
         self.assertAlmostEqual(self.motor.commands[-1][1], 500)
 
+    def test_each_zone_uses_its_own_decay(self):
+        # Distance from center (larger axis, 0 = center, 1 = edge): the point is
+        # pulled by the zone it is IN at the start of each orange frame.
+        zones = dict(
+            ORANGE_ZONE_OUTER_FRACTION=0.6,
+            ORANGE_ZONE_INNER_FRACTION=0.3,
+            ORANGE_DECAY_OUTER=0.2,
+            ORANGE_DECAY_MIDDLE=0.5,
+            ORANGE_DECAY_INNER=0.9,
+        )
+        with patch.multiple(settings, **zones):
+            self.camera.aim(torso(900), (1000, 1000), 0)     # 0.8 from center: outer
+            xs = []
+            for _ in range(4):
+                self.camera.missing()
+                xs.append(self.motor.commands[-1][0])
+        # first point stays (no velocity); then 900 -> 820 (outer, n=0.2) -> 756
+        # (0.64 from center: still outer) -> 628 (0.512: now middle, n=0.5)
+        self.assertAlmostEqual(xs[0], 900)
+        self.assertAlmostEqual(xs[1], 500 + 0.8 * 400)
+        self.assertAlmostEqual(xs[2], 500 + 0.8 * 0.8 * 400)
+        self.assertAlmostEqual(xs[3], 628)
+
+    def test_zone_boundaries(self):
+        with patch.multiple(
+            settings,
+            ORANGE_ZONE_OUTER_FRACTION=0.6,
+            ORANGE_ZONE_INNER_FRACTION=0.3,
+            ORANGE_DECAY_OUTER=0.1,
+            ORANGE_DECAY_MIDDLE=0.2,
+            ORANGE_DECAY_INNER=0.3,
+        ):
+            d = TrackerCameraController._decay_for
+            self.assertEqual(d(0.5, 0.5), 0.3)
+            self.assertEqual(d(0.5 + 0.5 * 0.29, 0.5), 0.3)
+            self.assertEqual(d(0.5 + 0.5 * 0.3, 0.5), 0.2)     # inner edge: middle
+            self.assertEqual(d(0.5, 0.5 - 0.5 * 0.59), 0.2)
+            self.assertEqual(d(0.5, 0.5 - 0.5 * 0.6), 0.1)     # outer edge: outer
+            self.assertEqual(d(1.0, 0.5), 0.1)
+            self.assertEqual(d(0.5, 0.5 + 0.5 * 0.5), 0.2)     # larger axis wins:
+            self.assertEqual(d(0.95, 0.52), 0.1)               # x decides
+
     def test_decay_works_on_both_axes_around_the_center(self):
         from unittest.mock import patch
 
         from animal import settings
 
         self.camera.aim(torso(300, y=800), (1000, 1000), 0)  # lower left
-        with patch.object(settings, "ORANGE_DECAY_PER_FRAME", 0.5):
+        with uniform_decay(0.5):
             self.camera.missing()   # no velocity yet: stays at the last point
             self.camera.missing()
         x, y = self.motor.commands[-1]

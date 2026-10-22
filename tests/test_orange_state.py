@@ -13,6 +13,16 @@ from tests.test_scenario import detections, feed, make_service
 SIZE = (1200, 1000)
 
 
+def uniform_decay(n):
+    """Same pull n in all three orange zones (zone-independent tests)."""
+    return patch.multiple(
+        settings,
+        ORANGE_DECAY_OUTER=n,
+        ORANGE_DECAY_MIDDLE=n,
+        ORANGE_DECAY_INNER=n,
+    )
+
+
 class Motor:
     def __init__(self):
         self.commands = []
@@ -52,7 +62,7 @@ class OrangeStateTests(unittest.TestCase):
         s = make()
         self.lock_while_moving_right(s)
         before = len(s.camera.tracker.commands)
-        with patch.object(settings, "ORANGE_DECAY_PER_FRAME", 0.5):
+        with uniform_decay(0.5):
             event = feed(s, 0.5, [])
             first = s.camera.orange_point_px
             self.assertEqual(event.reason, "target_temporarily_missing")
@@ -101,7 +111,7 @@ class OrangeStateTests(unittest.TestCase):
         def run(with_reference):
             s = make()
             self.lock_while_moving_right(s)       # last torso center ~ (540, 455)
-            with patch.object(settings, "ORANGE_DECAY_PER_FRAME", 0.5):
+            with uniform_decay(0.5):
                 feed(s, 0.5, [])
                 feed(s, 0.54, [])                 # orange now ~ (565, 477)
                 if with_reference:

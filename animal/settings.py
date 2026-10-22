@@ -95,7 +95,7 @@ MIN_SELECTION_CONFIDENCE = 0.6
 GREEN_ID_FORGET_SECONDS = 5.0
 # torso 의 원시 검출 하한(YOLO predict conf 로 쓰임). torso 는 ByteTrack 에 넣지
 # 않고 프레임마다 새로 검출한다. 모델이 0.2 미만은 내지 않는다.
-TORSO_TRACK_CONFIDENCE = 0.2
+TORSO_TRACK_CONFIDENCE = 0.4
 # 동물 추적기(ByteTrack) 설정 파일. 종별로 따로 돌아 id 를 안정화한다.
 TRACKER_CONFIG = "bytetrack.yaml"
 
@@ -105,20 +105,38 @@ TRACKER_CONFIG = "bytetrack.yaml"
 # 주황 상태에서는 모터가 "가상 목표점"을 쫓는다. 이 시간(초) 안에 torso 도 bbox 도
 # 다시 못 찾으면 도망간 것으로 판정하고, 락을 풀고 탐색 상태로 돌아간다.
 # (bbox 만 계속 보이는 동안은 주황이 아니므로 이 타이머가 돌지 않는다.)
-ORANGE_TIMEOUT_SECONDS = 2.0
+ORANGE_TIMEOUT_SECONDS = 3.0
 # 주황 가상 목표점의 이동 규칙.
 #  - 첫 주황점: 필터된(3프레임 평균) 최근 두 점을 한 걸음 외삽
 #    (마지막 + (마지막 - 직전)), 화면 안으로 제한.
-#  - 이후 주황점: 처리된 카메라 프레임마다 "화면 중앙"으로 이 비율만큼 당겨짐
+#  - 이후 주황점: 처리된 카메라 프레임마다 "화면 중앙"으로 n 만큼 당겨짐
 #      P_k = C + (1 - n) * (P_(k-1) - C),   C = (W/2, H/2)  (원점 (0,0) 아님)
 # 모터가 직전 목표를 향해 이미 움직였으니 목표가 이제 중앙에 더 가깝게 보일
-# 것이라는 근사다. 0.5 = 프레임마다 중앙과의 차이가 절반으로 줄어듦.
-# 0 에 가까울수록 외삽점에 오래 머물고, 1 이면 바로 화면 중앙.
-ORANGE_DECAY_PER_FRAME = 0.5
+# 것이라는 근사다. n=0.5 = 프레임마다 중앙과의 차이가 절반으로 줄어듦.
+# 0 에 가까울수록 현재 점에 오래 머물고, 1 이면 바로 화면 중앙.
+#
+# n 은 "이전 주황점이 화면 중앙에서 얼마나 떨어져 있는가"에 따라 3개 구역으로
+# 나뉘어 각각 다르게 쓴다. 거리 = max(|x-0.5|, |y-0.5|) / 0.5 (축별 큰 쪽).
+# 0 = 화면 중앙, 1 = 화면 경계이고, 구역은 중앙을 둘러싼 사각형이 된다
+# (PLAYBACK_*_FRACTION 의 "중앙에서 벗어난 정도"와 같은 방식).
+#     바깥 구역 : 거리 >= ORANGE_ZONE_OUTER_FRACTION        -> ORANGE_DECAY_OUTER
+#     중간 구역 : INNER <= 거리 < OUTER                      -> ORANGE_DECAY_MIDDLE
+#     안쪽 구역 : 거리 <  ORANGE_ZONE_INNER_FRACTION        -> ORANGE_DECAY_INNER
+# (첫 주황점은 구역과 무관하게 위의 외삽으로 정해진다.)
+# 바깥 구역 경계: 중앙에서 화면 경계까지 거리의 이 비율 이상이면 바깥 구역.
+ORANGE_ZONE_OUTER_FRACTION = 0.7
+# 안쪽 구역 경계: 중앙에서 이 비율 미만이면 안쪽 구역 (OUTER 보다 작아야 한다).
+ORANGE_ZONE_INNER_FRACTION = 0.4
+# 바깥 구역에서의 프레임당 당김 비율 n (화면 가장자리 쪽에 있을 때).
+ORANGE_DECAY_OUTER = 0.8
+# 중간 구역에서의 프레임당 당김 비율 n.
+ORANGE_DECAY_MIDDLE = 0.5
+# 안쪽 구역에서의 프레임당 당김 비율 n (이미 중앙 근처일 때).
+ORANGE_DECAY_INNER = 0.0
 # 도망 판정(bbox 축소 / 너무 작음 / 주황 지속) 직후, 이 시간(초) 동안은 어떤
 # 동물도 새로 락하지 않는다 (id 와 무관한 전체 금지). 지난 뒤에는 같은 동물도
 # 다시 잡을 수 있다. 새 락의 첫 모터 명령이 느린 복귀 동작을 끊는다.
-RESELECT_GRACE_SECONDS = 5.0
+RESELECT_GRACE_SECONDS = 3.5
 
 # ---------------------------------------------------------------------------
 # 감시 타임아웃
@@ -138,9 +156,9 @@ MAX_RESULT_AGE_SECONDS = 1.0
 # 그 외 선택지: "area"(면적만), "height"(높이만).
 DISTANCE_METRIC = "and"
 # 면적이 기준(baseline) 대비 이 비율 이하이면 줄어든 것으로 본다 (0.5 = 절반).
-AREA_RATIO_THRESHOLD = 0.50
+AREA_RATIO_THRESHOLD = 0.30
 # 높이가 기준 대비 이 비율 이하이면 줄어든 것으로 본다 (0.8 = 80%).
-HEIGHT_RATIO_THRESHOLD = 0.80
+HEIGHT_RATIO_THRESHOLD = 0.50
 # 락 직후(또는 대상 bbox id 가 바뀐 직후) 이 시간(초) 동안의 유효 프레임으로
 # 기준 크기를 잰다. 이 동안에는 도망 판정이 꺼져 있다.
 AREA_BASELINE_SECONDS = 0.4
@@ -168,10 +186,10 @@ MIN_BBOX_HEIGHT_PX = 20.0
 # bbox 가 없는 torso 는 받아들인다. 같은 방식으로 따라갈 bbox 도 이 원 안에서
 # (bbox 사각형까지의 거리로) 고른다.
 # 너비 배수: 클수록 대상이 빨리 움직여도 다시 찾지만 다른 개체를 잡을 위험도 커진다.
-TORSO_BRIDGE_RADIUS_MULTIPLIER = 1.8
+TORSO_BRIDGE_RADIUS_MULTIPLIER = 1.1
 # 반경 하한(px): 작고 먼 torso 는 너비 기반 반경이 너무 작아, 몇 프레임 사이의
 # 대상·카메라 이동량을 못 따라간다. 그걸 막는 고정 바닥값.
-TORSO_BRIDGE_MIN_RADIUS_PX = 250.0
+TORSO_BRIDGE_MIN_RADIUS_PX = 200.0
 
 # ---------------------------------------------------------------------------
 # 조준 필터 (animal/aiming.py)

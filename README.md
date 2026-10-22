@@ -121,7 +121,10 @@ uv run python main.py --no-motor       # 검출만 확인, 모터/재생 없음
 - 첫 주황점 = 마지막 두 점의 선형 외삽 `2·P_last − P_prev`(화면 안으로 제한).
   점이 하나뿐이면 속도가 없으니 그 자리.
 - 이후 주황점은 **화면 중앙 C=(W/2, H/2)**(좌상단 (0,0)이 아님) 쪽으로 처리된
-  카메라 프레임마다 `ORANGE_DECAY_PER_FRAME`(기본 0.5)만큼 끌려온다:
+  카메라 프레임마다 n만큼 끌려온다 (n은 이전 주황점의 화면 중앙으로부터의
+  거리 `max(|x−0.5|,|y−0.5|)/0.5`로 정해지는 3개 구역별 값 —
+  `ORANGE_DECAY_OUTER/MIDDLE/INNER`, 경계는 `ORANGE_ZONE_OUTER_FRACTION`(0.6)·
+  `ORANGE_ZONE_INNER_FRACTION`(0.3)):
   `P_k = C + (1−n)·(P_(k−1) − C)`. 모터가 이미 앞 목표 쪽으로 움직였다면
   대상이 화면에서 중앙에 가까워져 있을 거라는 가정이다. 오차가 0으로 수렴하므로
   모터가 계속 밀리지 않는다(`update()`가 모터 현재 위치 기준 상대값이기 때문).
@@ -234,8 +237,8 @@ uv run python tools/play_audio.py --label water_deer --dry-run
    기억한다. 기억된 id는 신뢰도가 떨어져도 초록이며, `GREEN_ID_FORGET_SECONDS`
    동안 안 보이면 잊는다. 회색은 락 대상이 될 수 없다.
 2. **주황 상태머신** — torso도 bbox도 못 찾으면 주황. 첫 주황점은 필터된 최근
-   두 점의 선형 외삽, 이후엔 프레임마다 화면 중앙으로 `ORANGE_DECAY_PER_FRAME`만큼
-   당겨진다. `ORANGE_TIMEOUT_SECONDS` 넘게 이어지면 도망 판정.
+   두 점의 선형 외삽, 이후엔 프레임마다 화면 중앙으로 구역별 `ORANGE_DECAY_*`만큼
+   당겨진다(바깥/중간/안쪽, 경계 0.6·0.3). `ORANGE_TIMEOUT_SECONDS` 넘게 이어지면 도망 판정.
 3. **재매칭** — 락된 id의 bbox 안 torso는 거리 무관. 아니면 직전 추적점(빨강=
    마지막 torso 중심, 주황=현재 주황점) 주변 원 안의 최근접 torso. 락 시작은
    torso가 매칭된 초록 bbox 중 최대.

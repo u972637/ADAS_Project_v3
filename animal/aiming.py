@@ -57,6 +57,17 @@ class TrackerCameraController:
             self._orange_point[1] * self.tracker_size[1],
         )
 
+    @staticmethod
+    def _decay_for(x: float, y: float) -> float:
+        """Per-frame pull n for a normalized point: chosen by its distance from the
+        screen center (0 = center, 1 = edge, larger axis), see settings.py."""
+        distance = max(abs(x - 0.5), abs(y - 0.5)) / 0.5
+        if distance >= settings.ORANGE_ZONE_OUTER_FRACTION:
+            return settings.ORANGE_DECAY_OUTER
+        if distance < settings.ORANGE_ZONE_INNER_FRACTION:
+            return settings.ORANGE_DECAY_INNER
+        return settings.ORANGE_DECAY_MIDDLE
+
     def missing(self):
         """The tracked torso is gone this frame but the lock is alive: advance
         the orange (virtual) target and command the motor toward it.
@@ -65,7 +76,7 @@ class TrackerCameraController:
         (2*last - previous, i.e. last + velocity), clamped inside the frame; with
         only one point there is no velocity, so it stays put. Every later
         orange frame pulls the previous orange point toward the screen center
-        C=(0.5, 0.5) by ORANGE_DECAY_PER_FRAME (in normalized coordinates; the
+        C=(0.5, 0.5) by the zone's ORANGE_DECAY_* (in normalized coordinates; the
         center is NOT the (0,0) corner). If nothing was ever aimed at (plain
         search) there is nothing to extrapolate."""
         if self._last_point is None:
@@ -79,8 +90,8 @@ class TrackerCameraController:
                 min(max(2 * ly - py, 0.0), 1.0),
             )
         else:
-            keep = 1.0 - settings.ORANGE_DECAY_PER_FRAME
             ox, oy = self._orange_point
+            keep = 1.0 - self._decay_for(ox, oy)
             point = (0.5 + keep * (ox - 0.5), 0.5 + keep * (oy - 0.5))
         self._orange_point = point
         self._orange_frames += 1
